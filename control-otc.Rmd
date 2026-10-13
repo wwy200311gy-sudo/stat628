@@ -1,0 +1,109 @@
+---
+title: "628-2"
+output: html_document
+date: "2026-10-13"
+---
+```{r}
+library(tidyverse)
+
+d_raw <- read_csv("acute_yield_data_fall_2026.csv", show_col_types = FALSE)
+
+glimpse(d_raw)
+```
+
+
+```{r}
+cat("Rows:", nrow(d_raw), "\n")
+print(colSums(is.na(d_raw)))
+
+# Each year x cultivar x intensity x treatment should have 3 rows (plots 1-3)
+d_raw |> count(year, cultivar, intensity_group, treatment) |> print(n = Inf)
+```
+
+
+
+```{r}
+d <- d_raw |>
+  mutate(
+    treatment       = factor(treatment, levels = c("Control", "OTC")),
+    intensity_group = factor(intensity_group, levels = c("D", "C", "B", "A")),  # D = 1 pulse ... A = 4 pulses
+    pulses          = c(D = 1, C = 2, B = 3, A = 4)[as.character(intensity_group)],
+    year            = factor(year),
+    total_n         = rotten_n + healthy_n,
+    total_weight    = rotten_weight + healthy_weight,
+    prop_healthy_n  = healthy_n / total_n,
+    prop_healthy_wt = healthy_weight / total_weight,
+    pair_id         = paste(year, cultivar, intensity_group, plot, sep = "_")
+  )
+
+# Every pair_id should have exactly 2 rows (Control + OTC)
+d |> count(pair_id) |> count(n)
+
+resp <- c("total_weight", "healthy_weight", "prop_healthy_n", "prop_healthy_wt")
+ylab_map <- c(total_weight    = "Total fruit weight (g)",
+              healthy_weight  = "Healthy fruit weight (g)",
+              prop_healthy_n  = "Proportion healthy (by count)",
+              prop_healthy_wt = "Proportion healthy (by weight)")
+```
+
+
+```{r}
+# ---------- 3. Descriptive statistics ----------
+desc <- d |>
+  group_by(year, cultivar, intensity_group, treatment) |>
+  summarise(across(all_of(resp), list(mean = mean, sd = sd)), n = n(), .groups = "drop")
+print(desc, n = Inf, width = Inf)
+```
+
+
+```{r}
+# ---------- 4. Paired differences (OTC - Control) ----------
+pairs <- d |>
+  select(pair_id, year, cultivar, intensity_group, pulses, plot, treatment, all_of(resp)) |>
+  pivot_wider(names_from = treatment, values_from = all_of(resp)) |>
+  mutate(
+    diff_total_weight   = total_weight_OTC    - total_weight_Control,
+    diff_healthy_weight = healthy_weight_OTC  - healthy_weight_Control,
+    diff_prop_n         = prop_healthy_n_OTC  - prop_healthy_n_Control,
+    diff_prop_wt        = prop_healthy_wt_OTC - prop_healthy_wt_Control
+  )
+
+pairs |>
+  group_by(year, cultivar, intensity_group) |>
+  summarise(across(starts_with("diff_"), mean), .groups = "drop") |>
+  print(n = Inf, width = Inf)
+```
+
+
+```{r}
+plot_paired <- function(r) {
+  ggplot(d, aes(treatment, .data[[r]], group = pair_id, colour = treatment)) +
+    geom_line(colour = "grey60") +
+    geom_point(size = 2) +
+    facet_grid(year + cultivar ~ intensity_group,
+               labeller = labeller(intensity_group = function(x) paste("Intensity", x))) +
+    labs(y = ylab_map[[r]], x = NULL,
+         title = paste("Paired plots:", ylab_map[[r]]),
+         subtitle = "Each line connects one Control plot and its paired OTC plot") +
+    theme_bw() + theme(legend.position = "none")
+}
+
+plot_paired("total_weight")
+```
+
+
+```{r}
+plot_paired("healthy_weight")
+```
+
+
+```{r}
+plot_paired("prop_healthy_wt")
+```
+
+
+```{r}
+plot_paired("prop_healthy_n")
+```
+
+

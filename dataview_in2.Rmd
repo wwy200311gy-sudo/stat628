@@ -1,0 +1,345 @@
+---
+title: "628in2p1"
+author: "Wuyang Wang"
+date: "2026-10-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Here, we wangt to group the data 
+
+```{r}
+library(tidyverse)
+library(dplyr)
+
+csv_url=c("https://raw.githubusercontent.com/wwy200311gy-sudo/stat628/refs/heads/main/acute_yield_data_fall_2026.csv")
+
+data=read.csv(csv_url)
+
+head(data)
+```
+we need compare different groups.
+
+```{r}
+
+data_clean <- data %>%
+  mutate(
+    year = as.integer(as.character(year)),
+    cultivar = toupper(trimws(as.character(cultivar))),
+    intensity_group = toupper(trimws(as.character(intensity_group))),
+    treatment = toupper(trimws(as.character(treatment)))
+  )
+
+
+
+data_mq <- data_clean %>%
+  filter(cultivar == "MQ")
+
+data_st <- data_clean %>%
+  filter(cultivar == "ST")
+```
+
+calculate the mean in different groups
+```{r}
+
+mean_valid <- function(x) {
+  if (all(is.na(x))) {
+    NA_real_
+  } else {
+    mean(x, na.rm = TRUE)
+  }
+}
+
+
+calculate_means <- function(df) {
+  df %>%
+    group_by(year, cultivar, intensity_group, treatment) %>%
+    summarise(
+      across(
+        c(rotten_n, rotten_weight, healthy_n, healthy_weight),
+        mean_valid,
+        .names = "{.col}_mean"
+      ),
+      .groups = "drop"
+    ) %>%
+    arrange(
+      year,
+      cultivar,
+      match(intensity_group, c("A", "B", "C", "D")),
+      match(treatment, c("CONTROL", "OTC"))
+    ) %>%
+    mutate(
+      treatment = recode(
+        treatment,
+        CONTROL = "Control",
+        OTC = "OTC"
+      )
+    )
+}
+
+
+# Add total mean count/weight and rotten percentages to each mean table.
+add_totals_and_percentages <- function(df) {
+  df %>%
+    mutate(
+      total_n_mean = rotten_n_mean + healthy_n_mean,
+      total_weight_mean = rotten_weight_mean + healthy_weight_mean,
+      rotten_n_pct = 100 * rotten_n_mean /
+        if_else(!is.na(total_n_mean) & total_n_mean > 0,
+                total_n_mean, NA_real_),
+      rotten_weight_pct = 100 * rotten_weight_mean /
+        if_else(!is.na(total_weight_mean) & total_weight_mean > 0,
+                total_weight_mean, NA_real_)
+    )
+}
+
+mq_means <- calculate_means(data_mq) %>% add_totals_and_percentages()
+st_means <- calculate_means(data_st) %>% add_totals_and_percentages()
+
+
+print(mq_means, n = Inf)
+print(st_means, n = Inf)
+
+
+write.csv(
+  mq_means,
+  "MQ_group_means.csv",
+  row.names = FALSE,
+  na = ""
+)
+
+write.csv(
+  st_means,
+  "ST_group_means.csv",
+  row.names = FALSE,
+  na = ""
+)
+```
+
+
+
+Each figure shows four mean outcomes for groups A-D. Control is blue and
+OTC is orange. 
+
+```{r prepare-comparison-plots, message=FALSE, warning=FALSE}
+metric_columns <- c(
+  "rotten_n_mean", "rotten_weight_mean",
+  "healthy_n_mean", "healthy_weight_mean"
+)
+metric_labels <- c(
+  "Rotten fruit count (berries)", "Rotten fruit weight (g)",
+  "Healthy fruit count (berries)", "Healthy fruit weight (g)"
+)
+
+comparison_data <- bind_rows(mq_means, st_means) %>%
+  mutate(
+    intensity_group = factor(
+      toupper(trimws(as.character(intensity_group))),
+      levels = c("A", "B", "C", "D")
+    ),
+    treatment = factor(
+      toupper(trimws(as.character(treatment))),
+      levels = c("CONTROL", "OTC"),
+      labels = c("Control", "OTC")
+    )
+  ) %>%
+  pivot_longer(
+    cols = all_of(metric_columns),
+    names_to = "metric",
+    values_to = "mean_value"
+  ) %>%
+  mutate(
+    metric = factor(metric, levels = metric_columns, labels = metric_labels)
+  )
+
+comparison_limits <- comparison_data %>%
+  group_by(metric) %>%
+  summarise(
+    upper = if (all(is.na(mean_value))) {
+      1
+    } else {
+      max(1, max(mean_value, na.rm = TRUE) * 1.2)
+    },
+    .groups = "drop"
+  ) %>%
+  mutate(intensity_group = factor("A", levels = c("A", "B", "C", "D")))
+
+plot_comparison <- function(selected_year, selected_cultivar) {
+  one_panel <- comparison_data %>%
+    filter(year == selected_year, cultivar == selected_cultivar)
+
+  ggplot(one_panel, aes(x = intensity_group, y = mean_value, fill = treatment)) +
+    geom_blank(
+      data = comparison_limits,
+      aes(x = intensity_group, y = upper),
+      inherit.aes = FALSE
+    ) +
+    geom_col(
+      position = position_dodge(width = 0.76),
+      width = 0.66,
+      na.rm = TRUE
+    ) +
+    geom_text(
+      aes(label = ifelse(is.na(mean_value), NA_character_,
+                         sprintf("%.1f", mean_value))),
+      position = position_dodge(width = 0.76),
+      vjust = -0.45,
+      size = 3.2,
+      na.rm = TRUE
+    ) +
+    facet_wrap(~ metric, ncol = 2, scales = "free_y", drop = FALSE) +
+    scale_x_discrete(drop = FALSE) +
+    scale_fill_manual(
+      values = c(Control = "blue", OTC = "orange"),
+      drop = FALSE
+    ) +
+    scale_y_continuous(
+      limits = c(0, NA),
+      expand = expansion(mult = c(0, 0.02))
+    ) +
+    labs(
+      title = paste(selected_cultivar, selected_year),
+      x = "Heat pulse group",
+      y = "Mean",
+      fill = NULL,
+      caption = "Bars show means. Each outcome uses the same scale across all four figures."
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(size = 20, face = "bold"),
+      strip.text = element_text(size = 11, face = "bold", hjust = 0),
+      legend.position = "top",
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.spacing = grid::unit(1.5, "lines"),
+      plot.caption = element_text(hjust = 0, size = 9),
+      plot.margin = margin(12, 18, 12, 12)
+    )
+}
+```
+
+### MQ 2024
+
+```{r mq-2024-comparison, echo=FALSE, fig.width=11, fig.height=8, out.width='100%', fig.retina=2}
+plot_comparison(2024, "MQ")
+```
+
+### MQ 2025
+
+```{r mq-2025-comparison, echo=FALSE, fig.width=11, fig.height=8, out.width='100%', fig.retina=2}
+plot_comparison(2025, "MQ")
+```
+
+### ST 2024
+
+```{r st-2024-comparison, echo=FALSE, fig.width=11, fig.height=8, out.width='100%', fig.retina=2}
+plot_comparison(2024, "ST")
+```
+
+### ST 2025
+
+```{r st-2025-comparison, echo=FALSE, fig.width=11, fig.height=8, out.width='100%', fig.retina=2}
+plot_comparison(2025, "ST")
+```
+
+
+Total count and total weight are the sums of the rotten and healthy mean
+values. Percentages are ratios of group means, rather than averages of
+individual plot percentages. A missing or zero total produces NA.
+
+```{r prepare-rotten-percentage-plots, message=FALSE, warning=FALSE}
+rotten_percentage_data <- bind_rows(mq_means, st_means) %>%
+  mutate(
+    intensity_group = factor(intensity_group, levels = c("A", "B", "C", "D")),
+    treatment = factor(treatment, levels = c("Control", "OTC"))
+  ) %>%
+  pivot_longer(
+    cols = c(rotten_n_pct, rotten_weight_pct),
+    names_to = "percentage_type",
+    values_to = "rotten_pct"
+  ) %>%
+  mutate(
+    percentage_type = factor(
+      percentage_type,
+      levels = c("rotten_n_pct", "rotten_weight_pct"),
+      labels = c("Rotten percentage by count", "Rotten percentage by weight")
+    )
+  )
+
+percentage_upper <- if (all(is.na(rotten_percentage_data$rotten_pct))) {
+  100
+} else {
+  min(100, max(10, ceiling(
+    max(rotten_percentage_data$rotten_pct, na.rm = TRUE) * 1.2 / 10
+  ) * 10))
+}
+
+plot_rotten_percentage <- function(selected_year, selected_cultivar) {
+  one <- rotten_percentage_data %>%
+    filter(year == selected_year, cultivar == selected_cultivar)
+
+  ggplot(one, aes(intensity_group, rotten_pct, fill = treatment)) +
+    geom_col(
+      position = position_dodge(width = 0.76), width = 0.66, na.rm = TRUE
+    ) +
+    geom_text(
+      aes(label = ifelse(is.na(rotten_pct), NA_character_,
+                         sprintf("%.1f%%", rotten_pct))),
+      position = position_dodge(width = 0.76),
+      vjust = -0.45, size = 3.3, na.rm = TRUE
+    ) +
+    facet_wrap(~ percentage_type, ncol = 2, drop = FALSE) +
+    scale_x_discrete(drop = FALSE) +
+    scale_fill_manual(
+      values = c(Control = "blue", OTC = "orange"), drop = FALSE
+    ) +
+    scale_y_continuous(
+      limits = c(0, percentage_upper),
+      labels = scales::label_number(suffix = "%"),
+      expand = expansion(mult = c(0, 0.08))
+    ) +
+    labs(
+      title = paste(selected_cultivar, selected_year, "Rotten fruit percentages"),
+      x = "Heat pulse group", y = "Rotten fruit (%)", fill = NULL,
+      caption = "Percentages = rotten mean / total mean x 100. All panels use the same scale."
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(size = 18, face = "bold"),
+      strip.text = element_text(size = 11, face = "bold"),
+      legend.position = "top",
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.spacing = grid::unit(1.5, "lines"),
+      plot.caption = element_text(hjust = 0, size = 9),
+      plot.margin = margin(12, 18, 12, 12)
+    )
+}
+```
+
+### MQ 2024 Rotten percentages
+
+```{r mq-2024-rotten-percentage, echo=FALSE, fig.width=11, fig.height=5, out.width='100%', fig.retina=2}
+plot_rotten_percentage(2024, "MQ")
+```
+
+### MQ 2025 Rotten percentages
+
+```{r mq-2025-rotten-percentage, echo=FALSE, fig.width=11, fig.height=5, out.width='100%', fig.retina=2}
+plot_rotten_percentage(2025, "MQ")
+```
+
+### ST 2024 Rotten percentages
+
+```{r st-2024-rotten-percentage, echo=FALSE, fig.width=11, fig.height=5, out.width='100%', fig.retina=2}
+plot_rotten_percentage(2024, "ST")
+```
+
+### ST 2025 Rotten percentages
+
+```{r st-2025-rotten-percentage, echo=FALSE, fig.width=11, fig.height=5, out.width='100%', fig.retina=2}
+plot_rotten_percentage(2025, "ST")
+```

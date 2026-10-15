@@ -1,0 +1,92 @@
+---
+title: "Cranberry Heat Stress Models"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE)
+library(nlme)
+```
+
+## Data
+
+```{r}
+data_clean <- read.csv("acute_yield_data_fall_2026.csv")
+
+data_clean$year <- factor(data_clean$year)
+data_clean$cultivar <- factor(toupper(trimws(data_clean$cultivar)))
+data_clean$intensity_group <- factor(data_clean$intensity_group)
+data_clean$treatment <- factor(
+  toupper(trimws(data_clean$treatment)), levels=c("CONTROL", "OTC")
+)
+data_clean$pair_id <- with(data_clean,
+  interaction(year, cultivar, intensity_group, plot, drop=TRUE)
+)
+
+data_clean$total_weight <- with(data_clean,
+  healthy_weight + rotten_weight
+)
+data_clean$healthy_count_pct <- with(data_clean,
+  100 * healthy_n / (healthy_n + rotten_n)
+)
+data_clean$healthy_weight_pct <- with(data_clean,
+  100 * healthy_weight / total_weight
+)
+```
+
+## Model 1: Total fruit weight
+
+```{r}
+m_total <- lme(
+  total_weight ~ treatment * (year + cultivar + intensity_group) + year:cultivar,
+  random = ~1 | pair_id,
+  data = data_clean,
+  method = "REML",
+  control = lmeControl(opt="optim")
+)
+summary(m_total)
+anova(m_total, type="marginal")
+```
+
+## Model 2: Healthy fruit weight
+
+```{r}
+m_healthy <- lme(
+  healthy_weight ~ treatment * (year + cultivar + intensity_group) + year:cultivar,
+  random = ~1 | pair_id,
+  data = data_clean,
+  method = "REML",
+  control = lmeControl(opt="optim")
+)
+summary(m_healthy)
+anova(m_healthy, type="marginal")
+```
+
+## Model 3: Healthy percentage by count
+
+```{r}
+m_count_pct <- lme(
+  healthy_count_pct ~ treatment * (year + cultivar + intensity_group) + year:cultivar,
+  random = ~1 | pair_id,
+  data = data_clean,
+  method = "REML",
+  control = lmeControl(opt="optim")
+)
+summary(m_count_pct)
+anova(m_count_pct, type="marginal")
+```
+
+## Model 4: Healthy percentage by weight
+
+```{r}
+m_weight_pct <- lme(
+  healthy_weight_pct ~ treatment * (year + cultivar + intensity_group) + year:cultivar,
+  random = ~1 | pair_id,
+  data = data_clean,
+  method = "REML",
+  control = lmeControl(opt="optim")
+)
+summary(m_weight_pct)
+anova(m_weight_pct, type="marginal")
+```
+

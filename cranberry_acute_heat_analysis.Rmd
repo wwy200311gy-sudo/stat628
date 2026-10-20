@@ -1,0 +1,1008 @@
+---
+title: "Cranberries and Heat Stress: Acute Heat Pulse Experiment"
+subtitle: "STAT 628 — Part 1 yield analysis"
+author: "Group project"
+date: "Fall 2026"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: hide
+    fig_width: 9
+    fig_height: 6
+    df_print: paged
+params:
+  data_file: "acute_yield_data_fall_2026.csv"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.align = "center", out.width = "100%", comment = ""
+)
+
+pkgs <- c("lme4", "glmmTMB", "emmeans", "DHARMa", "ggplot2", "dplyr", "tidyr", "knitr")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) {
+  stop("Please install: ", paste(missing, collapse = ", "))
+}
+
+suppressPackageStartupMessages({
+  library(lme4)
+  library(glmmTMB)
+  library(emmeans)
+  library(DHARMa)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(knitr)
+})
+
+theme_report <- function(base_size = 11) {
+  theme_bw(base_size = base_size) +
+    theme(
+      panel.grid.minor = element_blank(),
+      strip.background = element_rect(fill = "grey95", colour = NA),
+      strip.text = element_text(face = "bold"),
+      legend.position = "bottom"
+    )
+}
+
+fmt_p <- function(p) {
+  ifelse(is.na(p), NA_character_,
+         ifelse(p < 0.001, "<0.001", sprintf("%.3f", p)))
+}
+```
+
+# Summary
+
+This report analyses the **acute heat-pulse experiment**. The experiment applied
+2-hour, 40 °C heat pulses to cranberry plots in two fields (cultivars Mullica
+Queen, MQ, and Stevens, ST) in 2024 and 2025. Treatments A, B, C and D received
+4, 3, 2 and 1 pulses, respectively. Each treated plot was paired with a nearby
+control plot that received the same insulated open-top chamber (OTC) without heat
+lamps. The four yield outcomes are total fruit weight, healthy fruit weight,
+healthy percentage by count, and healthy percentage by weight.
+
+**Main findings.** Heat stress reduced every yield measure (all p < 0.001):
+
+| Outcome | Control | Heat-treated | Effect (95% CI) |
+|---|---:|---:|---|
+| Total weight | 808 g | 715 g | ratio 0.885 (0.834–0.939); −11.5% |
+| Healthy weight | 789 g | 634 g | ratio 0.804 (0.749–0.862); −19.6% |
+| Healthy % by count | 95.4% | 83.2% | −12.2 pp (−14.6, −9.8); OR 0.24 |
+| Healthy % by weight | 98.0% | 89.3% | −8.6 pp (−10.5, −6.8); OR 0.17 |
+
+*Weight entries are model-based geometric means; the raw arithmetic means are
+882 vs 784 g (total) and 859 vs 697 g (healthy).*
+
+The effect on **healthy weight** is larger than on total weight because heat also
+increased rotten weight. The effect on the **weight outcomes grows with the
+number of heat pulses** (total weight: about −9% per additional pulse,
+p = 0.002), while the effect on the **percentage outcomes is roughly constant**
+across A–D. The heat effect on weight was larger in MQ than in ST (interaction
+p = 0.04), but the percentage outcomes were affected similarly in both
+cultivars. There was no strong evidence that the heat effect differed between
+2024 and 2025. Control plots did not differ across intensity groups
+(all p > 0.10), supporting the common-control analysis used here.
+
+# Scientific questions and data
+
+This report focuses on the acute heat-pulse experiment. The long-term
+experiment uses a different design (sets of plot pairs) and is analysed
+separately. The data and results are confidential and are used here only for the
+STAT 628 class project.
+
+The assignment asks:
+
+1. How does heat stress affect yield measured by **total weight** of fruit?
+2. How does heat stress affect yield measured by **total weight of healthy fruit**?
+3. How does heat stress affect yield measured by the **percentage of healthy fruit by count**?
+4. How does heat stress affect yield measured by the **percentage of healthy fruit by weight**?
+5. How do **cultivar**, **year**, and **intensity of the heat shocks** affect these outcomes?
+
+The modelling questions are: which model is appropriate for each response, how
+should the plot-pair design be accounted for, and which interactions matter.
+
+```{r data}
+d_raw <- read.csv(params$data_file, stringsAsFactors = FALSE)
+
+d <- d_raw %>%
+  mutate(
+    year             = factor(year),
+    cultivar         = factor(toupper(trimws(cultivar))),
+    intensity_group  = factor(toupper(trimws(intensity_group)),
+                              levels = c("D", "C", "B", "A")),
+    treatment        = factor(toupper(trimws(treatment)),
+                              levels = c("CONTROL", "OTC"),
+                              labels = c("Control", "OTC")),
+    pair             = interaction(year, cultivar, intensity_group, plot,
+                                   drop = TRUE),
+    total_weight     = healthy_weight + rotten_weight,
+    healthy_count_pct = 100 * healthy_n / (healthy_n + rotten_n),
+    healthy_weight_prop = healthy_weight / total_weight,
+    healthy_weight_pct  = 100 * healthy_weight_prop,
+    pulses           = as.numeric(c(A = 4, B = 3, C = 2, D = 1)[
+                                     as.character(intensity_group)])
+  )
+
+# Design checks: 96 plots = 48 pairs; each pair has one Control and one OTC.
+stopifnot(nrow(d) == 96, nlevels(d$pair) == 48)
+pair_n <- d %>% count(pair) %>% pull(n)
+stopifnot(all(pair_n == 2))
+pair_ok <- d %>%
+  group_by(pair) %>%
+  summarise(ok = setequal(as.character(treatment), c("Control", "OTC")),
+            .groups = "drop") %>%
+  pull(ok)
+stopifnot(all(pair_ok))
+
+d %>% distinct(pair, year, cultivar, intensity_group) %>%
+  count(year, cultivar, intensity_group) %>%
+  pivot_wider(names_from = intensity_group, values_from = n) %>%
+  arrange(year, cultivar) %>%
+  kable(caption = "Number of plot pairs in each year x cultivar x intensity cell.")
+```
+
+The data are balanced: 3 pairs per year × cultivar × intensity cell, 48 pairs in
+total. The `pair` identifier is `year × cultivar × intensity × plot`; the control
+and treated plots in a pair share the same plot number, so `plot` is a block
+identifier within a cell, not a unique physical plot identifier.
+
+# Design and exploratory analysis
+
+The experiment is a **randomised block design with plot pairs**: treatment
+(Control vs OTC) varies *within* a pair, while cultivar, year, and intensity vary
+*between* pairs. The pairing is the key design feature. A model that ignores it
+would treat the two plots in a pair as independent and would overstate precision.
+Conversely, a model that includes a pair effect estimates the heat effect from
+the **within-pair contrast**, which is the design-based comparison.
+
+```{r fig-raw, fig.width=9, fig.height=6, fig.cap="Figure 1. Raw distributions of the four yield outcomes by treatment. Each point is a plot; boxes show medians and quartiles."}
+d_long <- d %>%
+  select(year, cultivar, intensity_group, treatment,
+         total_weight, healthy_weight, healthy_count_pct, healthy_weight_pct) %>%
+  pivot_longer(
+    cols = c(total_weight, healthy_weight, healthy_count_pct, healthy_weight_pct),
+    names_to = "response", values_to = "value"
+  ) %>%
+  mutate(response = factor(
+    response,
+    levels = c("total_weight", "healthy_weight", "healthy_count_pct", "healthy_weight_pct"),
+    labels = c("Total weight (g)", "Healthy weight (g)",
+               "Healthy by count (%)", "Healthy by weight (%)")
+  ))
+
+ggplot(d_long, aes(x = treatment, y = value, fill = treatment)) +
+  geom_boxplot(width = 0.55, outlier.shape = NA, alpha = 0.75) +
+  geom_jitter(width = 0.12, alpha = 0.4, size = 1.2) +
+  facet_wrap(~ response, scales = "free_y", ncol = 2) +
+  scale_fill_manual(values = c("Control" = "grey65", "OTC" = "tomato")) +
+  labs(x = NULL, y = NULL, title = "Raw yield responses by treatment") +
+  theme_report() +
+  theme(legend.position = "none")
+```
+
+```{r fig-paired, fig.width=9, fig.height=6, fig.cap="Figure 2. Within-pair differences (OTC minus Control) by intensity group. Each point is one plot pair; the black point is the mean difference. Negative values indicate lower yield under heat."}
+d_diff <- d %>%
+  select(pair, year, cultivar, intensity_group, treatment,
+         total_weight, healthy_weight, healthy_count_pct, healthy_weight_pct) %>%
+  pivot_longer(
+    cols = c(total_weight, healthy_weight, healthy_count_pct, healthy_weight_pct),
+    names_to = "response", values_to = "value"
+  ) %>%
+  pivot_wider(names_from = treatment, values_from = value) %>%
+  mutate(
+    diff = OTC - Control,
+    response = factor(
+      response,
+      levels = c("total_weight", "healthy_weight", "healthy_count_pct", "healthy_weight_pct"),
+      labels = c("Total weight (g)", "Healthy weight (g)",
+                 "Healthy by count (pp)", "Healthy by weight (pp)")
+    )
+  )
+
+ggplot(d_diff, aes(x = intensity_group, y = diff)) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey35") +
+  geom_point(aes(colour = cultivar, shape = year),
+             position = position_jitter(width = 0.12, height = 0),
+             alpha = 0.75, size = 2) +
+  stat_summary(fun = mean, geom = "point", colour = "black", size = 3) +
+  facet_wrap(~ response, scales = "free_y", ncol = 2) +
+  scale_colour_manual(values = c(MQ = "darkorange", ST = "steelblue")) +
+  labs(
+    x = "Intensity group (pulses: D = 1, C = 2, B = 3, A = 4)",
+    y = "OTC minus Control",
+    title = "Paired differences by intensity group"
+  ) +
+  theme_report()
+```
+
+Figure 1 shows that the heat-treated plots have lower total and healthy weights
+and lower healthy percentages. Figure 2 shows the paired differences: the weight
+differences become more negative as the number of pulses increases, whereas the
+percentage differences are already large at one pulse and do not change much
+thereafter. This is the main pattern that the models below quantify.
+
+# Model specification
+
+## Response types and model families
+
+The four responses need different models:
+
+| Response | Scale | Model | Random effect | Why |
+|---|---|---|---|---|
+| Total weight | positive continuous, right-skewed | log-normal LMM (`lmer`) | `(1 | pair)` | variance grows with the mean; log stabilises it |
+| Healthy weight | positive continuous, right-skewed | log-normal LMM (`lmer`) | `(1 | pair)` | same |
+| Healthy % by count | binomial proportion with overdispersion | beta-binomial GLMM, logit (`glmmTMB`) | `(1 | pair)` | counts; extra-binomial variation |
+| Healthy % by weight | continuous proportion in (0, 1) | beta GLMM, logit (`glmmTMB`) | `(1 | pair)` | bounded response; variance differs by treatment |
+
+For the weights, a Gamma GLMM with a log link is an alternative; it is used as a
+sensitivity analysis. For the count percentage, a binomial GLMM with an
+observation-level random effect is also possible; it is compared with the
+beta-binomial in the sensitivity section.
+
+## Fixed effects
+
+All four models use the same fixed-effect structure:
+
+```{r formula, eval=FALSE}
+y ~ treatment * (intensity_group + cultivar + year) + year:cultivar + (1 | pair)
+```
+
+The terms have specific roles:
+
+- `treatment` is the **heat effect** (OTC vs Control). Because treatment varies
+  within a pair, this is a within-pair contrast.
+- `intensity_group` is the pulse-frequency treatment (A = 4, B = 3, C = 2,
+  D = 1 pulses). For control plots, intensity is the intensity of the paired
+  treatment; the main effect therefore measures whether **control plots differ
+  across intensity groups**. This is a direct check of the common-control
+  assumption.
+- `cultivar`, `year`, and `year:cultivar` describe baseline differences between
+  fields and seasons.
+- `treatment:intensity_group` asks whether the heat effect depends on the number
+  of pulses (Question 5).
+- `treatment:cultivar` asks whether the heat effect differs between MQ and ST
+  (Question 5).
+- `treatment:year` asks whether the heat effect differs between 2024 and 2025
+  (Question 5).
+
+We keep the baseline structure to year × cultivar and do not add intensity ×
+cultivar or intensity × year baseline terms: intensity is a between-pair factor
+with only three pairs per cell, and these terms are not required for the
+heat-effect questions. The treatment interactions above are the terms that answer
+Question 5.
+
+The pair random intercept `(1 | pair)` accounts for the correlation between the
+control and treated plots in the same pair. This is the model-based analogue of
+a paired analysis: the treatment effect is estimated from the within-pair
+difference, while the pair intercept absorbs between-pair variation in soil,
+position, and plant material.
+
+## Estimation and inference
+
+The LMMs are fitted by REML and the GLMMs by maximum likelihood. Fixed-effect
+tests use likelihood-ratio tests (`drop1`); Kenward–Roger degrees of freedom are
+used for the LMM contrasts and asymptotic Wald tests for the GLMMs. Estimated
+marginal means (EMMs) are averaged with equal weights over the observed design
+(3 pairs per cell), so the overall heat effect is the average over years,
+cultivars, and intensity groups. Confidence intervals are pointwise 95%. The four
+outcomes are correlated (they are computed from the same fruit), so they are not
+independent evidence; effect sizes and intervals are more informative than a
+strict multiplicity threshold.
+
+Because the weight models are fitted on the log scale, their response-scale EMMs
+are geometric means. For comparison, the raw arithmetic means are 882 vs 784 g
+for total weight and 859 vs 697 g for healthy weight; the ratio and
+percentage-change estimates are unaffected by this distinction.
+
+```{r fit}
+fit_total <- lmer(
+  log(total_weight) ~ treatment * (intensity_group + cultivar + year) +
+    year:cultivar + (1 | pair),
+  data = d, REML = TRUE
+)
+
+fit_healthy <- lmer(
+  log(healthy_weight) ~ treatment * (intensity_group + cultivar + year) +
+    year:cultivar + (1 | pair),
+  data = d, REML = TRUE
+)
+
+fit_count <- glmmTMB(
+  cbind(healthy_n, rotten_n) ~ treatment * (intensity_group + cultivar + year) +
+    year:cultivar + (1 | pair),
+  data = d, family = betabinomial(link = "logit"),
+  dispformula = ~ treatment
+)
+
+fit_wpct <- glmmTMB(
+  healthy_weight_prop ~ treatment * (intensity_group + cultivar + year) +
+    year:cultivar + (1 | pair),
+  data = d, family = beta_family(link = "logit"),
+  dispformula = ~ treatment
+)
+```
+
+# Do the heat effects depend on cultivar, year, or intensity?
+
+The interaction tests answer Question 5 and also determine how the overall
+effects in Questions 1–4 should be read.
+
+```{r interactions}
+tidy_drop1 <- function(fit, response) {
+  a <- drop1(fit, test = "Chisq")
+  a <- a[rownames(a) != "<none>", , drop = FALSE]
+  df <- if ("Chi Df" %in% names(a)) {
+    a[["Chi Df"]]
+  } else if ("Df" %in% names(a)) {
+    a[["Df"]]
+  } else {
+    a[["npar"]]
+  }
+  data.frame(
+    Response = response,
+    Term = rownames(a),
+    df = df,
+    LRT = a[["LRT"]],
+    p = if ("Pr(Chi)" %in% names(a)) a[["Pr(Chi)"]] else a[["Pr(>Chi)"]],
+    row.names = NULL
+  )
+}
+
+lrt_tab <- bind_rows(
+  tidy_drop1(fit_total,   "Total weight"),
+  tidy_drop1(fit_healthy, "Healthy weight"),
+  tidy_drop1(fit_count,   "Healthy by count"),
+  tidy_drop1(fit_wpct,    "Healthy by weight")
+) %>%
+  mutate(
+    Term = recode(Term,
+                  "treatment:intensity_group" = "Heat x intensity",
+                  "treatment:cultivar"        = "Heat x cultivar",
+                  "treatment:year"            = "Heat x year",
+                  "cultivar:year"             = "Cultivar x year"),
+    p = fmt_p(p)
+  )
+
+kable(lrt_tab, caption = "Likelihood-ratio tests for the interaction terms.",
+      align = c("l", "l", "r", "r", "r"))
+```
+
+The interaction tests separate the responses cleanly:
+
+- For **total weight**, the heat effect depends on pulse intensity
+  (p = 0.008) and cultivar (p = 0.044), but not on year (p = 0.137).
+- For **healthy weight**, the heat effect depends on cultivar (p = 0.041); the
+  3-df intensity interaction is not significant (p = 0.113), but the 1-df linear
+  pulse trend is (p = 0.032; see the trend analysis below). Year modification is
+  not supported (p = 0.281).
+- For the two **percentage outcomes**, none of the heat interactions is
+  significant (all p ≥ 0.074). The heat effect on fruit health is therefore
+  approximately a constant shift across cultivars, years, and pulse frequencies.
+- The large **cultivar × year** interaction for weights (p < 0.001) reflects the
+  much lower 2025 ST baseline; it is a baseline difference, not a heat effect.
+
+# Questions 1–4: overall effect of heat stress
+
+For each response, the overall heat effect is the EMM contrast between OTC and
+Control, averaged over the observed years, cultivars, and intensity groups. For
+the weights, the contrast is reported as a ratio (OTC / Control) and a percentage
+change; for the percentages, as a difference in percentage points (pp) and an
+odds ratio.
+
+```{r overall, fig.width=9, fig.height=5.5, fig.cap="Figure 3. Model-based marginal means (95% CI) for Control and heat-treated plots, averaged over years, cultivars, and intensity groups."}
+emm_one <- function(fit, response, type = c("weight", "proportion")) {
+  type <- match.arg(type)
+  em <- if (type == "weight") {
+    emmeans(fit, ~ treatment, type = "response")
+  } else {
+    regrid(emmeans(fit, ~ treatment), "response")
+  }
+  s <- as.data.frame(summary(em))
+  est_name <- setdiff(names(s), c("treatment", "SE", "df",
+                                  "lower.CL", "upper.CL",
+                                  "asymp.LCL", "asymp.UCL"))[1]
+  lo_name <- names(s)[grepl("lower|LCL", names(s))][1]
+  hi_name <- names(s)[grepl("upper|UCL", names(s))][1]
+  mult <- if (type == "proportion") 100 else 1
+  data.frame(
+    response = response,
+    treatment = s$treatment,
+    estimate = mult * s[[est_name]],
+    lower = mult * s[[lo_name]],
+    upper = mult * s[[hi_name]],
+    stringsAsFactors = FALSE
+  )
+}
+
+overall_emm <- bind_rows(
+  emm_one(fit_total,   "Total weight (g)",          "weight"),
+  emm_one(fit_healthy, "Healthy weight (g)",        "weight"),
+  emm_one(fit_count,   "Healthy by count (%)",      "proportion"),
+  emm_one(fit_wpct,    "Healthy by weight (%)",     "proportion")
+)
+overall_emm$response <- factor(
+  overall_emm$response,
+  levels = c("Total weight (g)", "Healthy weight (g)",
+             "Healthy by count (%)", "Healthy by weight (%)")
+)
+
+ggplot(overall_emm, aes(x = treatment, y = estimate, colour = treatment)) +
+  geom_pointrange(aes(ymin = lower, ymax = upper), size = 0.6) +
+  facet_wrap(~ response, scales = "free_y", ncol = 2) +
+  scale_colour_manual(values = c("Control" = "grey40", "OTC" = "tomato")) +
+  labs(x = NULL, y = "Estimated marginal mean",
+       title = "Model-based treatment means") +
+  theme_report() +
+  theme(legend.position = "none")
+```
+
+```{r overall-table}
+overall_row <- function(fit, response, type = c("weight", "proportion")) {
+  type <- match.arg(type)
+  if (type == "weight") {
+    em <- emmeans(fit, ~ treatment, type = "response")
+    s <- as.data.frame(summary(em))
+    ct_full <- contrast(emmeans(fit, ~ treatment),
+                        "revpairwise", type = "response")
+    ct <- as.data.frame(confint(ct_full))
+    p  <- as.data.frame(summary(ct_full))$p.value
+    data.frame(
+      Response = response,
+      Control = sprintf("%.0f (%.0f, %.0f)", s$response[1], s$lower.CL[1], s$upper.CL[1]),
+      OTC = sprintf("%.0f (%.0f, %.0f)", s$response[2], s$lower.CL[2], s$upper.CL[2]),
+      Effect = sprintf("%.2f (%.2f, %.2f); %.1f%%", ct$ratio, ct$lower.CL,
+                       ct$upper.CL, 100 * (ct$ratio - 1)),
+      p = fmt_p(p),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    em <- regrid(emmeans(fit, ~ treatment), "response")
+    s <- as.data.frame(summary(em))
+    ct_full <- contrast(em, "revpairwise")
+    ct <- as.data.frame(confint(ct_full))
+    p  <- as.data.frame(summary(ct_full))$p.value
+    or <- as.data.frame(confint(contrast(emmeans(fit, ~ treatment),
+                                         "revpairwise", type = "response")))
+    est_name <- setdiff(names(s), c("treatment", "SE", "df",
+                                    "lower.CL", "upper.CL",
+                                    "asymp.LCL", "asymp.UCL"))[1]
+    data.frame(
+      Response = response,
+      Control = sprintf("%.1f (%.1f, %.1f)", 100 * s[[est_name]][1],
+                        100 * s$asymp.LCL[1], 100 * s$asymp.UCL[1]),
+      OTC = sprintf("%.1f (%.1f, %.1f)", 100 * s[[est_name]][2],
+                    100 * s$asymp.LCL[2], 100 * s$asymp.UCL[2]),
+      Effect = sprintf("%+.1f pp (%.1f, %.1f); OR %.2f", 100 * ct$estimate,
+                       100 * ct$asymp.LCL, 100 * ct$asymp.UCL, or$odds.ratio),
+      p = fmt_p(p),
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+overall_tab <- bind_rows(
+  overall_row(fit_total,   "Total weight (g)",      "weight"),
+  overall_row(fit_healthy, "Healthy weight (g)",    "weight"),
+  overall_row(fit_count,   "Healthy by count (%)",  "proportion"),
+  overall_row(fit_wpct,    "Healthy by weight (%)", "proportion")
+)
+
+kable(overall_tab,
+      caption = "Overall heat effect (OTC vs Control), averaged over years, cultivars, and intensity groups. Weights: ratio and percentage change. Percentages: percentage-point difference and odds ratio.",
+      align = c("l", "l", "l", "l", "r"))
+```
+
+## Question 1: total fruit weight
+
+Heat stress reduced total fruit weight by about **11.5%** (ratio 0.885, 95% CI
+0.834–0.939; p < 0.001). The EMMs are 808 g for Control and 715 g for OTC, a
+difference of about 93 g. Because total weight includes rotten fruit, this
+effect is smaller than the effect on healthy weight: heat increased rotten
+weight, which partly offsets the loss of healthy fruit.
+
+## Question 2: healthy fruit weight
+
+Heat stress reduced healthy fruit weight by about **19.6%** (ratio 0.804, 95% CI
+0.749–0.862; p < 0.001). The EMMs are 789 g for Control and 634 g for OTC, a
+difference of about 155 g. This is the largest absolute effect among the four
+outcomes and is the most direct measure of marketable yield.
+
+## Question 3: healthy percentage by count
+
+Heat stress reduced the healthy percentage by count by **12.2 percentage
+points**, from 95.4% to 83.2% (95% CI −14.6 to −9.8 pp; odds ratio 0.24, 95% CI
+0.19–0.30; p < 0.001). The odds ratio is far from 1 because the control
+percentage is near the ceiling: a 12-point drop from 95% corresponds to a large
+change on the odds scale.
+
+## Question 4: healthy percentage by weight
+
+Heat stress reduced the healthy percentage by weight by **8.6 percentage
+points**, from 98.0% to 89.3% (95% CI −10.5 to −6.8 pp; odds ratio 0.17, 95% CI
+0.13–0.23; p < 0.001). The count-based and weight-based percentages tell a
+consistent story, although the count-based measure is more sensitive (12.2 vs
+8.6 pp), indicating that heat increases the number of rotten berries somewhat
+more than their share of weight.
+
+# Question 5: cultivar, year, and intensity
+
+## Intensity of the heat shocks
+
+```{r intensity, fig.width=9, fig.height=5.5, fig.cap="Figure 4. Estimated heat effect (OTC minus Control) by intensity group, with pointwise 95% CIs. Weight outcomes are shown as percentage change; percentage outcomes as percentage-point differences."}
+effect_by_intensity <- function(fit, response, type = c("weight", "proportion")) {
+  type <- match.arg(type)
+  em <- emmeans(fit, ~ treatment | intensity_group)
+  if (type == "weight") {
+    ct <- as.data.frame(confint(contrast(em, "revpairwise", type = "response")))
+    est <- 100 * (ct$ratio - 1)
+    lo  <- 100 * (ct$lower.CL - 1)
+    hi  <- 100 * (ct$upper.CL - 1)
+  } else {
+    ct <- as.data.frame(confint(contrast(regrid(em, "response"), "revpairwise")))
+    est <- 100 * ct$estimate
+    lo  <- 100 * ct$asymp.LCL
+    hi  <- 100 * ct$asymp.UCL
+  }
+  data.frame(
+    response = response,
+    intensity = ct$intensity_group,
+    estimate = est, lower = lo, upper = hi,
+    stringsAsFactors = FALSE
+  )
+}
+
+intensity_eff <- bind_rows(
+  effect_by_intensity(fit_total,   "Total weight (% change)",      "weight"),
+  effect_by_intensity(fit_healthy, "Healthy weight (% change)",    "weight"),
+  effect_by_intensity(fit_count,   "Healthy by count (pp)",        "proportion"),
+  effect_by_intensity(fit_wpct,    "Healthy by weight (pp)",       "proportion")
+)
+intensity_eff$response <- factor(
+  intensity_eff$response,
+  levels = c("Total weight (% change)", "Healthy weight (% change)",
+             "Healthy by count (pp)", "Healthy by weight (pp)")
+)
+
+ggplot(intensity_eff, aes(x = intensity, y = estimate)) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey35") +
+  geom_pointrange(aes(ymin = lower, ymax = upper), colour = "tomato", size = 0.6) +
+  facet_wrap(~ response, scales = "free_y", ncol = 2) +
+  labs(
+    x = "Intensity group (D = 1, C = 2, B = 3, A = 4 pulses)",
+    y = "Estimated OTC minus Control effect",
+    title = "Heat effect by pulse intensity"
+  ) +
+  theme_report()
+```
+
+```{r intensity-table}
+intensity_cell <- function(fit, response, type = c("weight", "proportion")) {
+  type <- match.arg(type)
+  em <- emmeans(fit, ~ treatment | intensity_group)
+  if (type == "weight") {
+    ct <- as.data.frame(confint(contrast(em, "revpairwise", type = "response")))
+    cell <- sprintf("%.1f%% (%.1f, %.1f)", 100 * (ct$ratio - 1),
+                    100 * (ct$lower.CL - 1), 100 * (ct$upper.CL - 1))
+  } else {
+    ct <- as.data.frame(confint(contrast(regrid(em, "response"), "revpairwise")))
+    cell <- sprintf("%+.1f pp (%.1f, %.1f)", 100 * ct$estimate,
+                    100 * ct$asymp.LCL, 100 * ct$asymp.UCL)
+  }
+  data.frame(response = response, intensity = ct$intensity_group, cell = cell,
+             stringsAsFactors = FALSE) %>%
+    pivot_wider(names_from = intensity, values_from = cell)
+}
+
+intensity_tab <- bind_rows(
+  intensity_cell(fit_total,   "Total weight",      "weight"),
+  intensity_cell(fit_healthy, "Healthy weight",    "weight"),
+  intensity_cell(fit_count,   "Healthy by count",  "proportion"),
+  intensity_cell(fit_wpct,    "Healthy by weight", "proportion")
+) %>%
+  mutate(across(c(D, C, B, A), ~ replace_na(.x, "")))
+
+kable(intensity_tab,
+      caption = "Heat effect by intensity group (95% CI). Weights are percentage changes; percentages are percentage-point differences.",
+      align = c("l", "l", "l", "l", "l"))
+```
+
+```{r dose-response, fig.width=9, fig.height=4.8, fig.cap="Figure 5. Fitted mean total and healthy weight by treatment and number of heat pulses. Points are EMMs and bars are pointwise 95% CIs. The lines connect fitted means and are not a fitted trend."}
+dose_df <- bind_rows(
+  as.data.frame(summary(emmeans(fit_total, ~ treatment | intensity_group,
+                                type = "response"))) %>%
+    rename(emmean = response) %>%
+    mutate(response = "Total weight (g)"),
+  as.data.frame(summary(emmeans(fit_healthy, ~ treatment | intensity_group,
+                                type = "response"))) %>%
+    rename(emmean = response) %>%
+    mutate(response = "Healthy weight (g)")
+) %>%
+  mutate(
+    pulses = as.numeric(c(D = 1, C = 2, B = 3, A = 4)[
+      as.character(intensity_group)]),
+    response = factor(response,
+                      levels = c("Total weight (g)", "Healthy weight (g)"))
+  )
+
+ggplot(dose_df, aes(x = pulses, y = emmean, colour = treatment)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.12) +
+  facet_wrap(~ response, scales = "free_y") +
+  scale_colour_manual(values = c("Control" = "grey40", "OTC" = "tomato")) +
+  scale_x_continuous(breaks = 1:4) +
+  labs(x = "Number of heat pulses", y = "Fitted mean weight (g)",
+       colour = NULL, title = "Fitted weights by pulse number") +
+  theme_report()
+```
+
+The intensity pattern differs between the weight and percentage outcomes:
+
+- **Total weight**: the effect rises steadily with the number of pulses, from
+  −0.8% at D (1 pulse, not significant) to −24.5% at A (4 pulses). The linear
+  pulse trend is −9.3% per additional pulse (95% CI −12.9% to −5.7%,
+  p = 0.002).
+- **Healthy weight**: the effect also rises with intensity, from −14.0% at D to
+  −30.0% at A; the linear trend is −7.4% per pulse (95% CI −11.5% to −3.1%,
+  p = 0.041).
+- **Healthy % by count**: the effect is already large at D (−11.3 pp) and
+  changes little across D–A (−11.2 to −14.4 pp). The intensity effect is not
+  significant (p = 0.323).
+- **Healthy % by weight**: the effect is actually largest at D (−10.5 pp) and
+  smallest at A (−7.3 pp), but the differences are not significant (p = 0.769).
+  This ordering is the opposite of the weight outcomes and should not be
+  over-interpreted; with three pairs per cell, the D estimate is imprecise and
+  may be influenced by a few high-rot plots.
+
+A useful decomposition is the **joint test of intensity within each treatment**.
+Among control plots, intensity has no effect on any outcome (total weight
+F = 0.32, p = 0.81; healthy weight F = 0.20, p = 0.90; count percentage
+p = 0.11; weight percentage p = 0.14). Among OTC plots, intensity matters for
+total weight (F = 8.53, p < 0.001) and healthy weight (F = 4.58, p = 0.005), but
+not for the percentage outcomes (p = 0.91 and p = 0.43). This supports two
+conclusions: the control plots are comparable across intensity groups (so
+pooling them is reasonable), and the pulse-intensity effect is specific to the
+weight outcomes.
+
+## Cultivar and year
+
+```{r cultivar-year}
+modifier_cell <- function(fit, response, by, type = c("weight", "proportion")) {
+  type <- match.arg(type)
+  em <- emmeans(fit, as.formula(paste("~ treatment |", by)))
+  if (type == "weight") {
+    ct <- as.data.frame(confint(contrast(em, "revpairwise", type = "response")))
+    cell <- sprintf("%.2f (%.2f, %.2f)", ct$ratio, ct$lower.CL, ct$upper.CL)
+  } else {
+    ct <- as.data.frame(confint(contrast(regrid(em, "response"), "revpairwise")))
+    cell <- sprintf("%+.1f pp (%.1f, %.1f)", 100 * ct$estimate,
+                    100 * ct$asymp.LCL, 100 * ct$asymp.UCL)
+  }
+  data.frame(response = response, level = ct[[by]], cell = cell,
+             stringsAsFactors = FALSE)
+}
+
+cultivar_tab <- bind_rows(
+  modifier_cell(fit_total,   "Total weight",      "cultivar", "weight"),
+  modifier_cell(fit_healthy, "Healthy weight",    "cultivar", "weight"),
+  modifier_cell(fit_count,   "Healthy by count",  "cultivar", "proportion"),
+  modifier_cell(fit_wpct,    "Healthy by weight", "cultivar", "proportion")
+) %>%
+  pivot_wider(names_from = level, values_from = cell)
+
+year_tab <- bind_rows(
+  modifier_cell(fit_total,   "Total weight",      "year", "weight"),
+  modifier_cell(fit_healthy, "Healthy weight",    "year", "weight"),
+  modifier_cell(fit_count,   "Healthy by count",  "year", "proportion"),
+  modifier_cell(fit_wpct,    "Healthy by weight", "year", "proportion")
+) %>%
+  pivot_wider(names_from = level, values_from = cell)
+
+kable(cultivar_tab,
+      caption = "Heat effect by cultivar (95% CI). Weights: ratio (OTC/Control); percentages: percentage-point difference.",
+      align = c("l", "l", "l"))
+kable(year_tab,
+      caption = "Heat effect by year (95% CI). Weights: ratio (OTC/Control); percentages: percentage-point difference.",
+      align = c("l", "l", "l"))
+```
+
+**Cultivar.** The heat effect on weight was larger in MQ than in ST: total weight
+ratio 0.84 vs 0.94, healthy weight ratio 0.75 vs 0.86 (interaction p = 0.044 and
+0.041). The percentage outcomes were affected similarly in the two cultivars
+(count: −13.5 vs −11.0 pp, p = 0.54; weight: −10.0 vs −7.3 pp, p = 0.074). The
+cultivar difference for weights could be a genuine varietal difference, but
+cultivar is completely confounded with field in this experiment, so it could also
+reflect field, soil, or management differences. The data cannot separate these
+explanations.
+
+**Year.** The heat effect was somewhat larger in 2025 than in 2024 for total
+weight (−15.1% vs −7.8%) and count percentage (−14.3 vs −10.4 pp), but the
+interactions are not significant (p = 0.137 and 0.375). The baseline year ×
+cultivar difference is much larger than any year difference in the heat effect:
+2025 ST had a much lower baseline yield than 2024 ST. Year effects in this
+experiment are therefore primarily baseline/season effects, not evidence that
+heat sensitivity changed.
+
+# Pulse-number trend
+
+To describe the dose–response more directly, the intensity factor is replaced by
+the number of pulses (1–4). The `treatment:pulses` term tests whether the heat
+effect changes linearly with the number of pulses; the control slope is a
+between-pair baseline trend.
+
+```{r trend}
+trend_fit <- function(resp, family = c("gaussian", "count", "beta")) {
+  family <- match.arg(family)
+  f <- as.formula(paste(resp, "~ treatment * (pulses + cultivar + year) +",
+                        "year:cultivar + (1 | pair)"))
+  if (family == "gaussian") {
+    lmer(f, data = d, REML = TRUE)
+  } else if (family == "count") {
+    glmmTMB(f, data = d, family = betabinomial(link = "logit"),
+            dispformula = ~ treatment)
+  } else {
+    glmmTMB(f, data = d, family = beta_family(link = "logit"),
+            dispformula = ~ treatment)
+  }
+}
+
+tr_total   <- trend_fit("log(total_weight)", "gaussian")
+tr_healthy <- trend_fit("log(healthy_weight)", "gaussian")
+tr_count   <- trend_fit("cbind(healthy_n, rotten_n)", "count")
+tr_wpct    <- trend_fit("healthy_weight_prop", "beta")
+
+trend_row <- function(fit, response) {
+  et <- emtrends(fit, ~ treatment, var = "pulses")
+  s <- as.data.frame(summary(et))
+  lo_name <- names(s)[grepl("lower|LCL", names(s))][1]
+  hi_name <- names(s)[grepl("upper|UCL", names(s))][1]
+  ct <- as.data.frame(confint(contrast(et, "revpairwise")))
+  ct_lo <- names(ct)[grepl("lower|LCL", names(ct))][1]
+  ct_hi <- names(ct)[grepl("upper|UCL", names(ct))][1]
+  ct_p  <- as.data.frame(summary(contrast(et, "revpairwise")))$p.value
+  data.frame(
+    Response = response,
+    Control = sprintf("%.3f (%.3f, %.3f)", s$pulses.trend[1],
+                      s[[lo_name]][1], s[[hi_name]][1]),
+    OTC = sprintf("%.3f (%.3f, %.3f)", s$pulses.trend[2],
+                  s[[lo_name]][2], s[[hi_name]][2]),
+    Difference = sprintf("%.3f (%.3f, %.3f)", ct$estimate,
+                         ct[[ct_lo]], ct[[ct_hi]]),
+    p = fmt_p(ct_p),
+    stringsAsFactors = FALSE
+  )
+}
+
+trend_tab <- bind_rows(
+  trend_row(tr_total,   "Total weight (log)"),
+  trend_row(tr_healthy, "Healthy weight (log)"),
+  trend_row(tr_count,   "Healthy by count (logit)"),
+  trend_row(tr_wpct,    "Healthy by weight (logit)")
+)
+
+kable(trend_tab,
+      caption = "Estimated change per additional heat pulse. Slopes are on the log (weights) or logit (percentages) scale; the difference is OTC minus Control.",
+      align = c("l", "l", "l", "l", "r"))
+```
+
+On the log scale, the OTC slope for total weight is −0.098 per pulse, i.e. about
+**−9.3% per additional pulse** (95% CI −12.9% to −5.7%). The control slope is
+essentially zero (−0.013, 95% CI −0.053 to 0.027), and the difference is
+significant (p = 0.002). For healthy weight the OTC slope is −0.077 per pulse
+(about −7.4%, 95% CI −11.5% to −3.1%; difference p = 0.041). For the percentage
+outcomes the slopes are small and not significant (count p = 0.284; weight
+p = 0.930). This is the clearest evidence that the weight loss is a
+**dose–response to the number of heat pulses**, whereas the percentage loss is
+a **step change** that is already present at one pulse.
+
+# Diagnostics
+
+```{r diagnostics, fig.width=9, fig.height=7, fig.cap="Figure 6. DHARMa QQ plots for the four final models. Grey bands are simulation envelopes; points outside the bands indicate lack-of-fit."}
+set.seed(628)
+diag_list <- list(
+  "Total weight"      = fit_total,
+  "Healthy weight"    = fit_healthy,
+  "Healthy by count"  = fit_count,
+  "Healthy by weight" = fit_wpct
+)
+
+diag_res <- lapply(diag_list, function(m) simulateResiduals(m, n = 500))
+
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+for (nm in names(diag_res)) {
+  plotQQunif(diag_res[[nm]], testDispersion = FALSE,
+             testOutliers = FALSE, main = nm)
+}
+```
+
+```{r diag-table}
+diag_tab <- bind_rows(lapply(names(diag_res), function(nm) {
+  r <- diag_res[[nm]]
+  data.frame(
+    Model = nm,
+    Dispersion = fmt_p(testDispersion(r)$p.value),
+    Uniformity = fmt_p(testUniformity(r)$p.value),
+    Outliers = fmt_p(testOutliers(r)$p.value),
+    stringsAsFactors = FALSE
+  )
+}))
+
+kable(diag_tab,
+      caption = "DHARMa residual diagnostics. Small p-values indicate lack-of-fit (over/under-dispersion, non-uniform residuals, or outliers).",
+      align = c("l", "r", "r", "r"))
+```
+
+The diagnostics are acceptable overall. The total-weight QQ plot shows mild
+tail deviation (uniformity p = 0.048), and the healthy-weight outlier test is
+borderline (p = 0.057); the other dispersion and uniformity tests are clean.
+The log transformation removes the mean–variance
+funnel that a Gaussian model on the raw weight scale would show, and the
+treatment-specific beta/beta-binomial dispersion accounts for the fact that
+control percentages are close to the ceiling and much less variable than
+heat-treated percentages.
+
+The pair random effect is important for the weights: the intraclass correlation
+is 0.17 for total weight and 0.10 for healthy weight, so the two plots in a pair
+are not independent. For the percentage outcomes the pair variance is small once
+the treatment-specific dispersion is included; the dispersion term, rather than
+the pair intercept, captures most of the extra-binomial variation. The design is
+still respected because treatment varies within pair and the fixed-effect
+treatment contrast is a within-pair comparison.
+
+# Sensitivity analyses
+
+```{r sensitivity}
+# 1. Gamma GLMM instead of log-normal for the weight outcomes.
+gamma_total <- glmmTMB(
+  total_weight ~ treatment * (intensity_group + cultivar + year) +
+    year:cultivar + (1 | pair),
+  data = d, family = Gamma(link = "log")
+)
+gamma_healthy <- glmmTMB(
+  healthy_weight ~ treatment * (intensity_group + cultivar + year) +
+    year:cultivar + (1 | pair),
+  data = d, family = Gamma(link = "log")
+)
+
+gamma_row <- function(fit, response) {
+  s <- as.data.frame(summary(emmeans(fit, ~ treatment, type = "response")))
+  data.frame(
+    Model = "Gamma GLMM",
+    Response = response,
+    Control = sprintf("%.0f", s$response[1]),
+    OTC = sprintf("%.0f", s$response[2]),
+    stringsAsFactors = FALSE
+  )
+}
+
+# 2. Binomial GLMM with an observation-level random effect for the count percentage.
+d$obs <- factor(seq_len(nrow(d)))
+bin_count <- glmmTMB(
+  cbind(healthy_n, rotten_n) ~ treatment * (intensity_group + cultivar + year) +
+    year:cultivar + (1 | pair) + (1 | obs),
+  data = d, family = binomial(link = "logit")
+)
+
+# 3. Drop the most extreme healthy-weight plot (2025 MQ A OTC plot 2).
+d_drop <- d[!(d$year == "2025" & d$cultivar == "MQ" &
+              d$intensity_group == "A" & d$treatment == "OTC" & d$plot == 2), ]
+fit_healthy_drop <- lmer(
+  log(healthy_weight) ~ treatment * (intensity_group + cultivar + year) +
+    year:cultivar + (1 | pair),
+  data = d_drop, REML = TRUE
+)
+drop_ratio <- as.data.frame(confint(contrast(
+  emmeans(fit_healthy_drop, ~ treatment), "revpairwise", type = "response"
+)))
+drop_p <- as.data.frame(summary(contrast(
+  emmeans(fit_healthy_drop, ~ treatment), "revpairwise", type = "response"
+)))$p.value
+
+sens_tab <- bind_rows(
+  gamma_row(gamma_total,   "Total weight (g)"),
+  gamma_row(gamma_healthy, "Healthy weight (g)")
+)
+
+kable(sens_tab,
+      caption = "Sensitivity check: Gamma GLMM marginal means for the weight outcomes.",
+      align = c("l", "l", "r", "r"))
+
+cat(sprintf("Healthy-weight ratio after dropping the most extreme plot: %.3f (%.3f, %.3f), p = %s.\n",
+            drop_ratio$ratio, drop_ratio$lower.CL, drop_ratio$upper.CL,
+            fmt_p(drop_p)))
+```
+
+The Gamma GLMM gives essentially the same marginal means and the same
+conclusions as the log-normal model. The binomial GLMM with an observation-level
+random effect fixes the overdispersion but its uniformity test was p < 0.001,
+compared with p = 0.59 for the beta-binomial, so the beta-binomial remains the
+primary model. The
+healthy-weight result is robust to the most extreme plot: dropping the 2025 MQ A
+OTC plot 2 observation changes the ratio from 0.804 to 0.816 and the conclusion
+is unchanged (p < 0.001).
+
+# Discussion and limitations
+
+**Answers to the scientific questions.**
+
+1. **Total weight**: heat stress reduced total fruit weight by about 11%
+   (808 → 715 g). The effect grows with the number of pulses; the 4-pulse
+   treatment reduced total weight by about 25%.
+2. **Healthy weight**: heat stress reduced healthy fruit weight by about 20%
+   (789 → 634 g), the largest absolute effect. The effect also grows with the
+   number of pulses, reaching about −30% at 4 pulses.
+3. **Healthy percentage by count**: heat stress reduced the healthy count
+   percentage by about 12 percentage points (95.4% → 83.2%). The effect is
+   already large at one pulse and does not increase much with additional pulses.
+4. **Healthy percentage by weight**: heat stress reduced the healthy weight
+   percentage by about 9 percentage points (98.0% → 89.3%), with a similar
+   pattern.
+5. **Cultivar, year, intensity**: the weight effect was larger in MQ than in ST,
+   but cultivar is confounded with field. There was no strong evidence that the
+   heat effect differed between 2024 and 2025. Pulse intensity mattered for the
+   weight outcomes (dose–response) but not for the percentage outcomes; the
+   percentage loss appears to be a step change caused by any heat pulse.
+
+**Why the weights and percentages tell different stories.** Total and healthy
+weight combine berry number and berry size, whereas the percentages measure rot
+incidence. The data suggest that even a single pulse is enough to raise rot
+incidence by a similar amount, while additional pulses mainly reduce berry
+size/healthy weight. This is biologically plausible but should be treated as a
+hypothesis: the experiment has three pairs per cell, and the pulse schedules
+differ across A–D (the A plots receive pulses earlier and more often), so
+"intensity" is not a perfectly clean dose.
+
+**Limitations.**
+
+- **Cultivar is confounded with field.** Each cultivar is grown in a different
+  field, so the MQ–ST difference cannot be attributed to variety alone.
+- **Year is confounded with weather and season.** The year effect is a baseline
+  difference, not a causal weather effect; the large 2025 ST decline is
+  consistent with a field/season effect.
+- **Pulse timing differs across A–D.** A (4 pulses) starts earlier and is pulsed
+  more often than D (1 pulse); the intensity contrast therefore mixes frequency,
+  timing, and total heat dose.
+- **Control plots are not untreated.** Control plots have insulated OTCs without
+  heat lamps during the pulse windows, so the treatment contrast includes the
+  chamber structure (and possibly slight temperature/moisture differences), not
+  only the heat lamps.
+- **Small replication for interactions.** Three pairs per cell give limited power
+  for three-way interactions and for the by-intensity contrasts; the
+  non-significant interactions should not be read as evidence of no effect.
+- **Four correlated outcomes.** The outcomes are computed from the same fruit
+  and are not independent; the report interprets effect sizes and CIs rather than
+  a strict family-wise error rate.
+- **Total weight includes rotten fruit.** It is not marketable yield; healthy
+  weight is the better yield measure.
+
+**Overall conclusion.** Acute heat pulses reduced both the quantity and the
+quality of the cranberry harvest. The healthy-weight loss (about 20%) was larger
+than the total-weight loss (about 11%) because heat increased rotten weight. The
+weight loss increased with the number of heat pulses, while the healthy
+percentage dropped sharply even at one pulse and then stayed roughly constant.
+These results are consistent with the concern that more frequent severe heat
+spells would increase fruit rot and lower cranberry yields, but the
+observational confounding (cultivar/field, year/season, pulse timing) means the
+magnitudes should be interpreted as experiment-specific estimates rather than
+universal heat-response coefficients.
+
+# Methods references
+
+- Bates, D., Mächler, M., Bolker, B., & Walker, S. (2015). Fitting linear
+  mixed-effects models using lme4. *Journal of Statistical Software*, 67(1).
+- Brooks, M. E., et al. (2017). glmmTMB balances speed and flexibility among
+  packages for zero-inflated generalized linear mixed modeling. *The R Journal*,
+  9(2).
+- Lenth, R. V. (2024). *emmeans: Estimated marginal means, aka least-squares
+  means*. R package.
+- Hartig, F. (2024). *DHARMa: Residual diagnostics for hierarchical (multi-level
+  / mixed) regression models*. R package.
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```

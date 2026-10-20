@@ -1,0 +1,815 @@
+---
+title: "Acute Heat Stress: Control and A–D at the Same Level"
+subtitle: "STAT 628 — Part 1 model-building notes"
+author: "Group project"
+date: "Fall 2026"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: show
+    fig_width: 9
+    fig_height: 6
+    df_print: paged
+params:
+  data_file: "acute_yield_data_fall_2026.csv"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.align = "center", out.width = "100%", comment = ""
+)
+
+pkgs <- c("lme4", "glmmTMB", "emmeans", "DHARMa", "ggplot2", "dplyr", "tidyr", "knitr")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) stop("Please install: ", paste(missing, collapse = ", "))
+
+suppressPackageStartupMessages({
+  library(lme4)
+  library(glmmTMB)
+  library(emmeans)
+  library(DHARMa)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(knitr)
+})
+
+theme_report <- function(base_size = 11) {
+  theme_bw(base_size = base_size) +
+    theme(
+      panel.grid.minor = element_blank(),
+      strip.background = element_rect(fill = "grey95", colour = NA),
+      strip.text = element_text(face = "bold"),
+      legend.position = "bottom"
+    )
+}
+
+fmt_p <- function(p) {
+  ifelse(is.na(p), "—",
+         ifelse(p < 0.001, "<0.001", sprintf("%.3f", p)))
+}
+```
+
+# 1. Data cleaning
+
+The acute experiment has one row per plot. Each treated plot is paired with a
+nearby control plot that has the same year, cultivar, intensity group, and plot
+number. The pair is `year × cultivar × intensity_group × plot`; `plot` is a block
+number (1–3) within a cell, not a unique physical plot ID.
+
+The key change here is that **Control and A, B, C, D are five levels of one
+factor, `heat_group`**, rather than a binary `treatment` plus a separate
+`intensity_group` factor. This is the same "common control" parameterisation as
+the earlier analysis: every heat level is compared with the same control mean,
+and the model estimates one mean for each of the five levels.
+
+All 48 control plots are untreated (no heat lamps), so they are pooled into a
+single `Control` level. The four intensity groups' control plots are **not** four
+different treatments; they all contribute to the same control mean. The four heat
+levels A–D are compared with that pooled control.
+
+```{r data}
+d_raw <- read.csv("https://raw.githubusercontent.com/wwy200311gy-sudo/stat628/refs/heads/main/acute_yield_data_fall_2026.csv")
+
+d <- d_raw %>%
+  mutate(
+    year              = factor(year),
+    cultivar          = factor(toupper(trimws(cultivar))),
+    intensity_group   = factor(toupper(trimws(intensity_group)),
+                               levels = c("D", "C", "B", "A")),
+    treatment         = factor(toupper(trimws(treatment)),
+                               levels = c("CONTROL", "OTC"),
+                               labels = c("Control", "OTC")),
+    heat_group        = factor(
+      ifelse(treatment == "Control", "Control", as.character(intensity_group)),
+      levels = c("Control", "D", "C", "B", "A")
+    ),
+    pair              = interaction(year, cultivar, intensity_group, plot,
+                                    drop = TRUE),
+    total_weight      = healthy_weight + rotten_weight,
+    healthy_count_pct = 100 * healthy_n / (healthy_n + rotten_n),
+    healthy_weight_prop = healthy_weight / total_weight,
+    healthy_weight_pct  = 100 * healthy_weight_prop,
+    pulses            = as.numeric(c(A = 4, B = 3, C = 2, D = 1)[
+                                      as.character(intensity_group)])
+  )
+
+# Design checks -------------------------------------------------------------
+stopifnot(nrow(d) == 96, nlevels(d$pair) == 48)
+stopifnot(!anyNA(d$heat_group))
+stopifnot(all(d %>% count(pair) %>% pull(n) == 2))
+stopifnot(all(d %>%
+  group_by(pair) %>%
+  summarise(ok = setequal(as.character(treatment), c("Control", "OTC")),
+            .groups = "drop") %>%
+  pull(ok)))
+stopifnot(all(d$total_weight > 0), all(d$healthy_n + d$rotten_n > 0))
+
+table(d$heat_group, d$treatment) %>%
+  kable(caption = "Heat groups: Control is a single level; A–D are the four pulse frequencies.")
+```
+
+The design is balanced: 48 control plots and 12 plots for each of A–D, i.e. 3
+pairs in every year × cultivar × intensity cell. Control plots received the same
+insulated OTC without heat lamps, so `heat_group = Control` is the common
+reference for all four heat levels.
+
+# 2. Exploratory analysis
+
+```{r fig-raw, fig.width=10, fig.height=9, fig.cap="Figure 1. Raw distributions of the four yield outcomes by heat group, year, and cultivar. Rows are responses, columns are years, and colours are cultivars; nothing is averaged over year or cultivar."}
+d_long <- d %>%
+  select(year, cultivar, heat_group,
+         total_weight, healthy_weight, healthy_count_pct, healthy_weight_pct) %>%
+  pivot_longer(
+    cols = c(total_weight, healthy_weight, healthy_count_pct, healthy_weight_pct),
+    names_to = "response", values_to = "value"
+  ) %>%
+  mutate(response = factor(
+    response,
+    levels = c("total_weight", "healthy_weight", "healthy_count_pct", "healthy_weight_pct"),
+    labels = c("Total weight (g)", "Healthy weight (g)",
+               "Healthy by count (%)", "Healthy by weight (%)")
+  ))
+
+ggplot(d_long, aes(x = heat_group, y = value, fill = cultivar)) +
+  geom_boxplot(position = position_dodge(0.8), width = 0.7,
+               outlier.shape = NA, alpha = 0.8) +
+  geom_point(aes(colour = cultivar),
+             position = position_jitterdodge(jitter.width = 0.1,
+                                             dodge.width = 0.8),
+             alpha = 0.3, size = 0.9, show.legend = FALSE) +
+  facet_grid(response ~ year, scales = "free_y") +
+  scale_fill_manual(values = c(MQ = "darkorange", ST = "steelblue")) +
+  scale_colour_manual(values = c(MQ = "darkorange", ST = "steelblue")) +
+  labs(x = "Heat group (D = 1, C = 2, B = 3, A = 4 pulses)",
+       y = NULL, title = "Raw yield responses by heat group, year, and cultivar") +
+  theme_report()
+```
+
+```{r fig-paired, fig.width=10, fig.height=9, fig.cap="Figure 2. Within-pair differences (heat level minus its paired Control) by intensity, year, and cultivar. Each point is a plot pair; the coloured points and lines are cultivar-specific means."}
+d_diff <- d %>%
+  select(pair, year, cultivar, intensity_group, treatment,
+         total_weight, healthy_weight, healthy_count_pct, healthy_weight_pct) %>%
+  pivot_longer(
+    cols = c(total_weight, healthy_weight, healthy_count_pct, healthy_weight_pct),
+    names_to = "response", values_to = "value"
+  ) %>%
+  pivot_wider(names_from = treatment, values_from = value) %>%
+  mutate(
+    diff = OTC - Control,
+    response = factor(
+      response,
+      levels = c("total_weight", "healthy_weight", "healthy_count_pct", "healthy_weight_pct"),
+      labels = c("Total weight (g)", "Healthy weight (g)",
+                 "Healthy by count (pp)", "Healthy by weight (pp)")
+    )
+  )
+
+ggplot(d_diff, aes(x = intensity_group, y = diff, colour = cultivar)) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey35") +
+  geom_point(position = position_jitterdodge(jitter.width = 0.1,
+                                             dodge.width = 0.3),
+             alpha = 0.5, size = 1.5) +
+  stat_summary(fun = mean, geom = "point",
+               position = position_dodge(0.3), size = 2.5) +
+  stat_summary(fun = mean, geom = "line", aes(group = cultivar),
+               position = position_dodge(0.3)) +
+  facet_grid(response ~ year, scales = "free_y") +
+  scale_colour_manual(values = c(MQ = "darkorange", ST = "steelblue")) +
+  labs(x = "Intensity group (D = 1, C = 2, B = 3, A = 4 pulses)",
+       y = "Heat level minus Control",
+       title = "Paired differences by intensity, year, and cultivar") +
+  theme_report()
+```
+
+```{r raw-means}
+d %>%
+  group_by(year, cultivar, heat_group) %>%
+  summarise(across(c(total_weight, healthy_weight,
+                     healthy_count_pct, healthy_weight_pct), mean),
+            .groups = "drop") %>%
+  pivot_longer(cols = c(total_weight, healthy_weight,
+                        healthy_count_pct, healthy_weight_pct),
+               names_to = "response", values_to = "mean") %>%
+  mutate(response = factor(response,
+                           levels = c("total_weight", "healthy_weight",
+                                      "healthy_count_pct", "healthy_weight_pct"),
+                           labels = c("Total weight", "Healthy weight",
+                                      "Count %", "Weight %")),
+         col = paste(year, cultivar)) %>%
+  select(heat_group, response, col, mean) %>%
+  pivot_wider(names_from = col, values_from = mean) %>%
+  arrange(response, heat_group) %>%
+  kable(digits = 1,
+        col.names = c("Heat group", "Response", "2024 MQ", "2024 ST",
+                      "2025 MQ", "2025 ST"),
+        caption = "Raw arithmetic means by heat group, year, and cultivar (not adjusted for design).")
+```
+
+The weight entries above are raw arithmetic means. The model-based weight means
+in the next sections are geometric means and are lower (e.g. 808 g for Control
+total weight); the ratio and percentage-change estimates are unaffected by this
+distinction.
+
+Figure 1 puts Control and A–D on the same x-axis and separates years (columns) and
+cultivars (colours); Figure 2 does the same for the paired differences, so the
+cultivar and year patterns are visible rather than averaged away. The weight differences become more negative
+with more pulses, while the percentage differences are already large at one
+pulse. The models below test whether these patterns are consistent across
+cultivars and years.
+
+# 3. Model families and candidate structure
+
+| Response | Family | Why |
+|---|---|---|
+| Total weight | log-normal LMM | positive, right-skewed; variance grows with the mean |
+| Healthy weight | log-normal LMM | same |
+| Healthy % by count | beta-binomial GLMM (logit) | counts with extra-binomial variation |
+| Healthy % by weight | beta GLMM (logit) | continuous proportion in (0, 1) |
+
+The LMMs are fitted with `lme4::lmer`; the GLMMs with `glmmTMB`. All models have
+a **pair random intercept** `(1 | pair)`. `heat_group` varies within a pair
+(Control vs the paired heat level), so the heat effects are within-pair
+contrasts; cultivar and year vary between pairs.
+
+The candidate fixed-effect structures are:
+
+| Model | Mean structure | Purpose |
+|---|---|---|
+| H0 | `heat_group + cultivar + year + year:cultivar` | additive 5-level model (common control) |
+| H1 | `heat_group * cultivar + year + year:cultivar` | does the heat profile differ by cultivar? |
+| H2 | `heat_group * year + cultivar + year:cultivar` | does the heat profile differ by year? |
+| H3 | `heat_group * (cultivar + year) + year:cultivar` | both |
+| H4 | `treatment * intensity_group + cultivar + year + year:cultivar` | design check only: separate control means (not a candidate) |
+
+H0 has 5 group means (Control, A, B, C, D). All control plots are untreated and
+pooled into one Control level, so the model estimates a single control mean.
+H4 is **not a candidate model**: it is a design check with separate control
+means (8 cell means). H0 is H4 with the three constraints
+`Control_A = Control_B = Control_C = Control_D`, so the H0-vs-H4 test has 3 df
+and checks whether the design-based pooling is supported by the data.
+
+# 4. Model comparison
+
+```{r fit-models}
+fit_lmm <- function(form) lmer(form, data = d, REML = FALSE)
+fit_bb <- function(form) glmmTMB(form, data = d, family = betabinomial(),
+                                 dispformula = ~ treatment)
+fit_beta <- function(form) glmmTMB(form, data = d, family = beta_family(),
+                                  dispformula = ~ treatment)
+
+# Total weight
+h0_total <- fit_lmm(log(total_weight) ~ heat_group + cultivar + year +
+                      year:cultivar + (1 | pair))
+h1_total <- fit_lmm(log(total_weight) ~ heat_group * cultivar + year +
+                      year:cultivar + (1 | pair))
+h2_total <- fit_lmm(log(total_weight) ~ heat_group * year + cultivar +
+                      year:cultivar + (1 | pair))
+h3_total <- fit_lmm(log(total_weight) ~ heat_group * (cultivar + year) +
+                      year:cultivar + (1 | pair))
+h4_total <- fit_lmm(log(total_weight) ~ treatment * intensity_group +
+                      cultivar + year + year:cultivar + (1 | pair))
+
+# Healthy weight
+h0_healthy <- fit_lmm(log(healthy_weight) ~ heat_group + cultivar + year +
+                        year:cultivar + (1 | pair))
+h1_healthy <- fit_lmm(log(healthy_weight) ~ heat_group * cultivar + year +
+                        year:cultivar + (1 | pair))
+h2_healthy <- fit_lmm(log(healthy_weight) ~ heat_group * year + cultivar +
+                        year:cultivar + (1 | pair))
+h3_healthy <- fit_lmm(log(healthy_weight) ~ heat_group * (cultivar + year) +
+                        year:cultivar + (1 | pair))
+h4_healthy <- fit_lmm(log(healthy_weight) ~ treatment * intensity_group +
+                        cultivar + year + year:cultivar + (1 | pair))
+
+# Count percentage
+h0_count <- fit_bb(cbind(healthy_n, rotten_n) ~ heat_group + cultivar + year +
+                     year:cultivar + (1 | pair))
+h1_count <- fit_bb(cbind(healthy_n, rotten_n) ~ heat_group * cultivar + year +
+                     year:cultivar + (1 | pair))
+h2_count <- fit_bb(cbind(healthy_n, rotten_n) ~ heat_group * year + cultivar +
+                     year:cultivar + (1 | pair))
+h3_count <- fit_bb(cbind(healthy_n, rotten_n) ~ heat_group * (cultivar + year) +
+                     year:cultivar + (1 | pair))
+h4_count <- fit_bb(cbind(healthy_n, rotten_n) ~ treatment * intensity_group +
+                     cultivar + year + year:cultivar + (1 | pair))
+
+# Weight percentage
+h0_wpct <- fit_beta(healthy_weight_prop ~ heat_group + cultivar + year +
+                      year:cultivar + (1 | pair))
+h1_wpct <- fit_beta(healthy_weight_prop ~ heat_group * cultivar + year +
+                      year:cultivar + (1 | pair))
+h2_wpct <- fit_beta(healthy_weight_prop ~ heat_group * year + cultivar +
+                      year:cultivar + (1 | pair))
+h3_wpct <- fit_beta(healthy_weight_prop ~ heat_group * (cultivar + year) +
+                      year:cultivar + (1 | pair))
+h4_wpct <- fit_beta(healthy_weight_prop ~ treatment * intensity_group +
+                      cultivar + year + year:cultivar + (1 | pair))
+
+aic_tab <- bind_rows(
+  data.frame(Response = "Total",   Model = c("H0", "H1", "H2", "H3"),
+             df = sapply(list(h0_total, h1_total, h2_total, h3_total),
+                         function(m) attr(logLik(m), "df")),
+             AIC = sapply(list(h0_total, h1_total, h2_total, h3_total), AIC)),
+  data.frame(Response = "Healthy", Model = c("H0", "H1", "H2", "H3"),
+             df = sapply(list(h0_healthy, h1_healthy, h2_healthy, h3_healthy),
+                         function(m) attr(logLik(m), "df")),
+             AIC = sapply(list(h0_healthy, h1_healthy, h2_healthy, h3_healthy), AIC)),
+  data.frame(Response = "Count",   Model = c("H0", "H1", "H2", "H3"),
+             df = sapply(list(h0_count, h1_count, h2_count, h3_count),
+                         function(m) attr(logLik(m), "df")),
+             AIC = sapply(list(h0_count, h1_count, h2_count, h3_count), AIC)),
+  data.frame(Response = "Weight",  Model = c("H0", "H1", "H2", "H3"),
+             df = sapply(list(h0_wpct, h1_wpct, h2_wpct, h3_wpct),
+                         function(m) attr(logLik(m), "df")),
+             AIC = sapply(list(h0_wpct, h1_wpct, h2_wpct, h3_wpct), AIC))
+) %>%
+  group_by(Response) %>%
+  mutate(dAIC = AIC - min(AIC)) %>%
+  ungroup()
+
+kable(aic_tab, digits = 2,
+      caption = "AIC comparison of the 5-level heat_group candidate models (ML fits). H4 (separate control means) is a design check, not a candidate.")
+```
+
+```{r lrt-models}
+lrt_row <- function(m_small, m_big, label) {
+  a <- anova(m_small, m_big)
+  df_col <- if ("Chi Df" %in% names(a)) a[["Chi Df"]] else a[["Df"]]
+  data.frame(Test = label, Chisq = a$Chisq[2], df = df_col[2],
+             p = a$`Pr(>Chisq)`[2])
+}
+
+bind_rows(
+  lrt_row(h0_total,   h1_total,   "Total: heat × cultivar"),
+  lrt_row(h0_total,   h2_total,   "Total: heat × year"),
+  lrt_row(h0_total,   h3_total,   "Total: heat × (cultivar + year)"),
+  lrt_row(h0_healthy, h1_healthy, "Healthy: heat × cultivar"),
+  lrt_row(h0_healthy, h2_healthy, "Healthy: heat × year"),
+  lrt_row(h0_healthy, h3_healthy, "Healthy: heat × (cultivar + year)"),
+  lrt_row(h0_count,   h1_count,   "Count: heat × cultivar"),
+  lrt_row(h0_count,   h2_count,   "Count: heat × year"),
+  lrt_row(h0_count,   h3_count,   "Count: heat × (cultivar + year)"),
+  lrt_row(h0_wpct,    h1_wpct,    "Weight: heat × cultivar"),
+  lrt_row(h0_wpct,    h2_wpct,    "Weight: heat × year"),
+  lrt_row(h0_wpct,    h3_wpct,    "Weight: heat × (cultivar + year)")
+) %>%
+  mutate(p = fmt_p(p)) %>%
+  kable(digits = 3, caption = "Likelihood-ratio tests for the 5-level heat_group candidate models.")
+```
+
+```{r design-check}
+bind_rows(
+  lrt_row(h0_total,   h4_total,   "Total"),
+  lrt_row(h0_healthy, h4_healthy, "Healthy"),
+  lrt_row(h0_count,   h4_count,   "Count"),
+  lrt_row(h0_wpct,    h4_wpct,    "Weight")
+) %>%
+  mutate(p = fmt_p(p)) %>%
+  kable(digits = 3,
+        caption = "Design check: pooled control (H0) vs separate control means (H4). H4 is not a candidate model.")
+```
+
+**What the comparison says.**
+
+- **Total and healthy weight**: `heat_group × year` is strongly supported
+  (p = 0.0003 and p = 0.006), while `heat_group × cultivar` is not
+  (p = 0.28 and p = 0.29). The pooled-control model is used by design; the
+  separate-control check is not significant (p = 0.79 and p = 0.88). The selected
+  weight model is **H2**:
+  `heat_group * year + cultivar + year:cultivar`. The heat profile differs
+  between 2024 and 2025, but not between MQ and ST.
+- **Count percentage**: no heat interaction is supported (heat × cultivar
+  p = 0.95, heat × year p = 0.34, both p = 0.74). The pooled-control model is
+  used by design; the separate-control check is not significant (p = 0.12). The
+  selected model is additive, **H0**.
+- **Weight percentage**: no heat interaction is supported (heat × cultivar
+  p = 0.44, heat × year p = 0.82, both p = 0.69). The pooled-control model is
+  used by design; the separate-control check is borderline but not significant
+  (p = 0.10). The selected model is additive, **H0**. H4 uses three extra
+  parameters for the separate control means; with p = 0.10 for the pooling check,
+  H0 is preferred for parsimony.
+
+For the percentage outcomes, `year:cultivar` is also not supported (count
+p = 0.69, weight p = 0.67), so the final additive model drops it:
+
+```{r final-percentage}
+f_count <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group + cultivar + year +
+                     (1 | pair),
+                   data = d, family = betabinomial(),
+                   dispformula = ~ treatment)
+f_wpct <- glmmTMB(healthy_weight_prop ~ heat_group + cultivar + year +
+                    (1 | pair),
+                  data = d, family = beta_family(),
+                  dispformula = ~ treatment)
+
+aic_pct <- AIC(h0_count, f_count, h0_wpct, f_wpct)
+kable(data.frame(Model = rownames(aic_pct), aic_pct, row.names = NULL),
+      digits = 2,
+      caption = "AIC for the additive percentage models with and without year:cultivar.")
+```
+
+# 5. Final models
+
+The final models are:
+
+```{r final-models, eval=FALSE}
+# weights: heat profile varies by year, not by cultivar
+log(weight) ~ heat_group * year + cultivar + year:cultivar + (1 | pair)
+
+# percentages: additive 5-level heat effect
+count_pct  ~ heat_group + cultivar + year + (1 | pair)   # beta-binomial
+weight_pct ~ heat_group + cultivar + year + (1 | pair)   # beta
+```
+
+```{r final-fit}
+f_total <- lmer(log(total_weight) ~ heat_group * year + cultivar +
+                  year:cultivar + (1 | pair),
+                data = d, REML = TRUE)
+f_healthy <- lmer(log(healthy_weight) ~ heat_group * year + cultivar +
+                    year:cultivar + (1 | pair),
+                  data = d, REML = TRUE)
+
+tidy_lmm <- function(m) {
+  s <- summary(m)$coefficients
+  data.frame(Term = rownames(s), Estimate = s[, 1], SE = s[, 2], t = s[, 3],
+             row.names = NULL)
+}
+tidy_glmm <- function(m) {
+  s <- summary(m)$coefficients$cond
+  data.frame(Term = rownames(s), Estimate = s[, 1], SE = s[, 2],
+             z = s[, 3], p = s[, 4], row.names = NULL)
+}
+
+kable(tidy_lmm(f_total), digits = 3,
+      caption = "Final model: log(total weight), heat_group × year + cultivar + year:cultivar.")
+kable(tidy_lmm(f_healthy), digits = 3,
+      caption = "Final model: log(healthy weight), heat_group × year + cultivar + year:cultivar.")
+kable(tidy_glmm(f_count), digits = 3,
+      caption = "Final model: healthy percentage by count (beta-binomial), additive.")
+kable(tidy_glmm(f_wpct), digits = 3,
+      caption = "Final model: healthy percentage by weight (beta), additive.")
+```
+
+## 5.1 Overall heat effect and A–D versus Control
+
+The **average heat effect** is the average of the four heat levels minus the
+common Control: the contrast `(-1, 1/4, 1/4, 1/4, 1/4)` over
+Control, D, C, B, A. This is the natural "heat vs no heat" summary when Control
+and A–D are at the same level. The **A–D versus Control** contrasts show which
+pulse frequencies differ from Control; Holm adjustment is applied within the four
+contrasts.
+
+```{r weight-effects}
+avg_heat <- function(fit, by = NULL, type = c("weight", "prop")) {
+  type <- match.arg(type)
+  if (is.null(by)) {
+    em <- emmeans(fit, ~ heat_group)
+  } else {
+    em <- emmeans(fit, as.formula(paste("~ heat_group |", by)))
+  }
+  if (type == "weight") {
+    contrast(em, list("Heat avg vs Control" = c(-1, .25, .25, .25, .25)),
+             type = "response")
+  } else {
+    contrast(regrid(em, "response"),
+             list("Heat avg vs Control" = c(-1, .25, .25, .25, .25)))
+  }
+}
+
+ad_heat <- function(fit, by = NULL, type = c("weight", "prop")) {
+  type <- match.arg(type)
+  if (is.null(by)) {
+    em <- emmeans(fit, ~ heat_group)
+  } else {
+    em <- emmeans(fit, as.formula(paste("~ heat_group |", by)))
+  }
+  if (type == "weight") {
+    contrast(em, "trt.vs.ctrl", ref = "Control", type = "response",
+             adjust = "holm")
+  } else {
+    contrast(regrid(em, "response"), "trt.vs.ctrl", ref = "Control",
+             adjust = "holm")
+  }
+}
+
+linear_heat <- function(fit, by = NULL) {
+  if (is.null(by)) {
+    em <- emmeans(fit, ~ heat_group)
+  } else {
+    em <- emmeans(fit, as.formula(paste("~ heat_group |", by)))
+  }
+  # per-pulse linear contrast among D, C, B, A; Control has weight 0
+  contrast(em, list("Per-pulse trend" = c(0, -0.3, -0.1, 0.1, 0.3)),
+           type = "response")
+}
+
+cat("=== average heat vs Control (weights) ===\n")
+for (m in list(total = f_total, healthy = f_healthy)) {
+  print(avg_heat(m, type = "weight"))
+  print(avg_heat(m, by = "year", type = "weight"))
+}
+
+cat("\n=== A-D vs Control (weights, Holm within 4) ===\n")
+for (m in list(total = f_total, healthy = f_healthy)) {
+  print(ad_heat(m, type = "weight"))
+  print(ad_heat(m, by = "year", type = "weight"))
+}
+
+cat("\n=== per-pulse trend among A-D (weights) ===\n")
+for (m in list(total = f_total, healthy = f_healthy)) {
+  print(linear_heat(m))
+  print(linear_heat(m, by = "year"))
+}
+```
+
+```{r prop-effects}
+cat("=== average heat vs Control (count, pp + OR) ===\n")
+print(avg_heat(f_count, type = "prop"))
+print(contrast(emmeans(f_count, ~ heat_group),
+               list("Heat avg vs Control" = c(-1, .25, .25, .25, .25)),
+               type = "response"))
+cat("\n=== A-D vs Control (count, pp, Holm) ===\n")
+print(ad_heat(f_count, type = "prop"))
+cat("\n=== per-pulse trend (count) ===\n")
+print(linear_heat(f_count))
+
+cat("\n=== average heat vs Control (weight pct, pp + OR) ===\n")
+print(avg_heat(f_wpct, type = "prop"))
+print(contrast(emmeans(f_wpct, ~ heat_group),
+               list("Heat avg vs Control" = c(-1, .25, .25, .25, .25)),
+               type = "response"))
+cat("\n=== A-D vs Control (weight pct, pp, Holm) ===\n")
+print(ad_heat(f_wpct, type = "prop"))
+cat("\n=== per-pulse trend (weight pct) ===\n")
+print(linear_heat(f_wpct))
+```
+
+**Reading the weight results.** The average heat effect is a ratio of about
+0.885 for total weight (−11.5%) and 0.804 for healthy weight (−19.6%). But the
+heat profile is not the same in the two years: in 2024 the average effect is
+about −8% (total) and −17% (healthy), while in 2025 it is about −15% and −22%.
+The A–D contrasts show that the 4-pulse treatment (A) is the most damaging in
+both years, but the dose–response is much steeper in 2025: the per-pulse trend is
+about −3% in 2024 (not significant) and about −15% in 2025 for total weight.
+This is the `heat_group × year` interaction.
+
+**Reading the percentage results.** The average heat effect is about −12.3
+percentage points for count (OR about 0.24) and −8.3 points for weight (OR about
+0.19). The four heat levels are all similar: for count, D–A are about −11 to
+−13 points; for weight, D is the worst (−10 points) and A the least bad
+(−6 points), but the per-pulse trend is not significant (p ≈ 0.10–0.50). The
+percentage effect is a **step change**: any heat pulse lowers the healthy
+percentage, and additional pulses do not change it much.
+
+## 5.2 Figures
+
+```{r fig-weight-means, fig.width=10, fig.height=7, fig.cap="Figure 3. Fitted mean total and healthy weight by heat group, year, and cultivar (95% CI). The model has no heat × cultivar interaction, so the MQ and ST curves are parallel; the vertical offset is the cultivar baseline difference."}
+emm_weight <- bind_rows(
+  as.data.frame(summary(emmeans(f_total, ~ heat_group | year + cultivar, type = "response"))) %>%
+    rename(emmean = response) %>%
+    mutate(response = "Total weight (g)"),
+  as.data.frame(summary(emmeans(f_healthy, ~ heat_group | year + cultivar, type = "response"))) %>%
+    rename(emmean = response) %>%
+    mutate(response = "Healthy weight (g)")
+) %>%
+  mutate(response = factor(response, levels = c("Total weight (g)", "Healthy weight (g)")))
+
+ggplot(emm_weight, aes(x = heat_group, y = emmean, colour = cultivar, group = cultivar)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.12) +
+  facet_grid(response ~ year, scales = "free_y") +
+  scale_colour_manual(values = c(MQ = "darkorange", ST = "steelblue")) +
+  labs(x = "Heat group (D = 1, C = 2, B = 3, A = 4 pulses)",
+       y = "Fitted mean weight (g)", colour = NULL,
+       title = "Fitted weights by heat group, year, and cultivar") +
+  theme_report()
+```
+
+```{r fig-prop-means, fig.width=10, fig.height=7, fig.cap="Figure 4. Fitted healthy percentages by heat group, year, and cultivar (95% CI). The additive model has no heat × year or heat × cultivar interaction, so the curves are parallel within a response; the vertical offsets are baseline differences."}
+prop_emm <- function(m, response) {
+  s <- as.data.frame(summary(regrid(emmeans(m, ~ heat_group | year + cultivar), "response")))
+  est_name <- setdiff(names(s), c("heat_group", "year", "cultivar", "SE", "df",
+                                  "asymp.LCL", "asymp.UCL",
+                                  "lower.CL", "upper.CL"))[1]
+  data.frame(year = s$year, cultivar = s$cultivar, heat_group = s$heat_group,
+             response = response, emmean = s[[est_name]],
+             lower = s$asymp.LCL, upper = s$asymp.UCL,
+             stringsAsFactors = FALSE)
+}
+emm_prop <- bind_rows(
+  prop_emm(f_count, "Healthy by count (%)"),
+  prop_emm(f_wpct,  "Healthy by weight (%)")
+) %>%
+  mutate(response = factor(response,
+                           levels = c("Healthy by count (%)", "Healthy by weight (%)")))
+
+ggplot(emm_prop, aes(x = heat_group, y = emmean, colour = cultivar, group = cultivar)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.12) +
+  facet_grid(response ~ year, scales = "free_y") +
+  scale_colour_manual(values = c(MQ = "darkorange", ST = "steelblue")) +
+  scale_y_continuous(labels = function(x) 100 * x) +
+  labs(x = "Heat group (D = 1, C = 2, B = 3, A = 4 pulses)",
+       y = "Fitted healthy percentage (%)", colour = NULL,
+       title = "Fitted percentages by heat group, year, and cultivar") +
+  theme_report()
+```
+
+```{r trend-table}
+trend_rows <- function(fit, response) {
+  ov <- as.data.frame(confint(linear_heat(fit)))
+  ov_p <- as.data.frame(summary(linear_heat(fit)))$p.value
+  yr <- as.data.frame(confint(linear_heat(fit, by = "year")))
+  yr_p <- as.data.frame(summary(linear_heat(fit, by = "year")))$p.value
+  data.frame(Response = response,
+             Period = c("Overall", paste0(yr$year)),
+             Ratio = c(ov$ratio, yr$ratio),
+             Lower = c(ov$lower.CL, yr$lower.CL),
+             Upper = c(ov$upper.CL, yr$upper.CL),
+             p = c(ov_p, yr_p))
+}
+trend_tab <- bind_rows(
+  trend_rows(f_total,   "Total weight"),
+  trend_rows(f_healthy, "Healthy weight")
+) %>%
+  mutate(`Per-pulse ratio (95% CI)` = sprintf("%.3f (%.3f, %.3f)",
+                                               Ratio, Lower, Upper),
+         p = fmt_p(p)) %>%
+  select(Response, Period, `Per-pulse ratio (95% CI)`, p)
+
+kable(trend_tab,
+      caption = "Per-pulse linear trend among A–D (Control excluded), overall and by year. The model has no heat × cultivar interaction, so the trend is common to MQ and ST.")
+```
+
+The trend is computed only among A–D; Control is excluded. Because the selected
+weight model has no `heat_group × cultivar` interaction, the per-pulse trend is
+common to MQ and ST; only the year-specific trend differs.
+
+# 6. Model checking
+
+```{r diagnostics, fig.width=9, fig.height=7, fig.cap="Figure 5. DHARMa QQ plots for the four final models."}
+set.seed(628)
+diag_list <- list(
+  "Total weight" = f_total,
+  "Healthy weight" = f_healthy,
+  "Healthy by count" = f_count,
+  "Healthy by weight" = f_wpct
+)
+diag_res <- lapply(diag_list, function(m) simulateResiduals(m, n = 500))
+
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+for (nm in names(diag_res)) {
+  plotQQunif(diag_res[[nm]], testDispersion = FALSE,
+             testOutliers = FALSE, main = nm)
+}
+```
+
+```{r diag-table}
+bind_rows(lapply(names(diag_res), function(nm) {
+  r <- diag_res[[nm]]
+  data.frame(Model = nm,
+             Dispersion = fmt_p(testDispersion(r)$p.value),
+             Uniformity = fmt_p(testUniformity(r)$p.value),
+             Outliers = fmt_p(testOutliers(r)$p.value))
+})) %>%
+  kable(caption = "DHARMa residual diagnostics for the final models.")
+```
+
+```{r icc}
+bind_rows(
+  data.frame(Model = "Total weight",
+             ICC = as.data.frame(VarCorr(f_total))$vcov[1] /
+               sum(as.data.frame(VarCorr(f_total))$vcov)),
+  data.frame(Model = "Healthy weight",
+             ICC = as.data.frame(VarCorr(f_healthy))$vcov[1] /
+               sum(as.data.frame(VarCorr(f_healthy))$vcov))
+) %>%
+  kable(digits = 3, caption = "Pair intraclass correlation for the weight models.")
+```
+
+Diagnostics are acceptable: dispersion, uniformity, and outlier tests are
+non-significant (the count model's dispersion test is borderline, p ≈ 0.08). The
+pair random effect matters for the weights (ICC ≈ 0.19 total, 0.11 healthy); for
+the percentage models the pair variance is small and the treatment-specific
+dispersion captures most of the extra-binomial variation.
+
+## 6.1 Sensitivity checks
+
+```{r sensitivity}
+gamma_total <- glmmTMB(total_weight ~ heat_group * year + cultivar +
+                         year:cultivar + (1 | pair),
+                       data = d, family = Gamma(link = "log"))
+gamma_healthy <- glmmTMB(healthy_weight ~ heat_group * year + cultivar +
+                           year:cultivar + (1 | pair),
+                         data = d, family = Gamma(link = "log"))
+
+gamma_means <- function(m) {
+  s <- as.data.frame(summary(emmeans(m, ~ heat_group, type = "response")))
+  mean(s$response)  # average over the 5 heat groups
+}
+gamma_tab <- data.frame(
+  Model = c("Total", "Healthy"),
+  `Log-normal` = c(gamma_means(f_total), gamma_means(f_healthy)),
+  Gamma = c(gamma_means(gamma_total), gamma_means(gamma_healthy))
+)
+kable(gamma_tab, col.names = c("Model", "Log-normal", "Gamma"),
+      caption = "Sensitivity: average fitted weight (g) from the log-normal and Gamma models.")
+
+d_drop <- d[!(d$year == "2025" & d$cultivar == "MQ" &
+              d$intensity_group == "A" & d$treatment == "OTC" & d$plot == 2), ]
+f_healthy_drop <- lmer(log(healthy_weight) ~ heat_group * year + cultivar +
+                         year:cultivar + (1 | pair),
+                       data = d_drop, REML = TRUE)
+drop_avg <- as.data.frame(confint(contrast(
+  emmeans(f_healthy_drop, ~ heat_group),
+  list("Heat avg vs Control" = c(-1, .25, .25, .25, .25)),
+  type = "response"
+)))
+cat(sprintf("Healthy-weight average heat/control ratio after dropping the most extreme plot: %.3f (%.3f, %.3f).\n",
+            drop_avg$ratio, drop_avg$lower.CL, drop_avg$upper.CL))
+```
+
+The Gamma model gives the same conclusions as the log-normal model, and dropping
+the most extreme healthy-weight plot changes the average heat/control ratio only
+slightly (0.804 → 0.816). The results are not driven by that one plot.
+
+# 7. Summary for discussion
+
+**Final models.**
+
+| Response | Model | Selected because |
+|---|---|---|
+| Total weight | `heat_group * year + cultivar + year:cultivar + (1\|pair)` | heat profile differs by year; not by cultivar |
+| Healthy weight | same | same |
+| Healthy % by count | `heat_group + cultivar + year + (1\|pair)`, beta-binomial | no heat interactions; additive |
+| Healthy % by weight | same, beta | no heat interactions; additive |
+
+**Key numbers.**
+
+| Response | Control | Average of A–D | Effect |
+|---|---:|---:|---|
+| Total weight | 808 g | 715 g | −11.5% |
+| Healthy weight | 789 g | 634 g | −19.6% |
+| Healthy % by count | 95.4% | 83.1% | −12.3 pp (OR 0.24) |
+| Healthy % by weight | 97.9% | 89.6% | −8.3 pp (OR 0.19) |
+
+**What changes when Control and A–D are at the same level.**
+
+- The **5-level factor** makes the heat profile explicit: each of A–D is compared
+  with the same Control, and the model can test whether the *shape* of the
+  profile differs by cultivar or year.
+- The shape **does** differ by year for the weights (`heat_group × year`
+  p = 0.0003 total, p = 0.006 healthy). In 2024 the per-pulse trend is weak
+  (about −3%, p ≈ 0.20); in 2025 it is strong (about −15%, p < 0.0001). A binary
+  `treatment × year` term would miss this, because it only allows the overall
+  OTC-vs-Control shift to differ by year, not the A–D shape.
+- The shape does **not** differ by cultivar for the weights
+  (`heat_group × cultivar` p = 0.28/0.29), even though the binary
+  treatment × cultivar test was borderline in the earlier parameterisation. The
+  4-df interaction has less power than the 1-df binary test, so the two
+  parameterisations answer slightly different questions.
+- For the percentage outcomes, the profile is **additive**: no heat × cultivar,
+  no heat × year, and the four heat levels are similar. The heat effect is a
+  step change, not a dose–response.
+- **Pooling controls** is by design: all control plots are untreated. The
+  separate-control check is not significant (H0 vs H4, 3 df: p = 0.79, 0.88,
+  0.12, 0.10), so the pooled-control model is used; the percentage checks are
+  only moderately powered.
+
+**Points to discuss tomorrow.**
+
+1. **Heat × year for weights.** Is the stronger 2025 dose–response real, or is it
+   driven by a few plots (e.g. the 2025 MQ A/B and ST A/B plots with high rot)?
+   The sensitivity check drops the most extreme healthy-weight plot and the
+   average effect is stable, but the year-specific A–D shape deserves a closer
+   look.
+2. **Heat × cultivar.** The 5-level test says no (p = 0.28/0.29); the binary
+   treatment × cultivar test was borderline (p ≈ 0.05/0.046). Which
+   parameterisation should we report? The 5-level model is the direct answer to
+   "Control and A–D at the same level"; the binary model is more powerful for a
+   single shift.
+3. **Pooling controls.** The controls are untreated, so they are pooled by
+   design. The separate-control check is not significant (p = 0.10–0.88), but the
+   percentage checks are only moderately powered. Is the design-based pooling
+   sufficient, or should we report the separate-control model as a sensitivity?
+4. **Percentage model.** Additive 5-level model, no dose–response. Is the
+   A–D difference (e.g. D worst for weight percentage, A worst for count) worth
+   reporting, given that the per-pulse trend is not significant?
+5. **Linear trend.** The per-pulse contrast is computed only among A–D; Control
+   is excluded. Is the equal-spacing assumption (1, 2, 3, 4 pulses) defensible,
+   given that pulse timing also differs?
+6. **Sample size.** Three pairs per cell; the 4-df interactions are low-powered.
+   Non-significant interactions should not be read as evidence of no effect.
+
+# Appendix: session info
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```

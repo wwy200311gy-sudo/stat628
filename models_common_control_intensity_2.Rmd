@@ -1,0 +1,681 @@
+---
+title: "Cranberry Models: Common Control"
+output: html_document
+params:
+  data_file: "acute_yield_data_fall_2026.csv"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE)
+library(nlme)
+library(dplyr)
+library(ggplot2)
+library(gtsummary)
+```
+
+## Introduction
+
+
+# Things to consider : 
+1. How does heat stress affect yield as measured by the total weight of fruit?
+2. How does heat stress affect yield as measured by the total weight of healthy fruit?
+3. How does heat stress affect yield as measured by the percentage of healthy berries by count?
+4. How does heat stress affect yield as measured by the percentage of healthy fruit by weight?
+5. How do the cultivars, years, and intensity of the heat shocks (in the case of the acute heat
+stress experiment) affect the various measures of yield?
+
+
+## Data Reprocessing
+
+Raw data provided has been in the following format : 
+```{r, echo=FALSE}
+data <- read.csv("acute_yield_data_fall_2026.csv")
+data_formatted <- data %>%
+  mutate(
+    year = factor(year),
+    plot = factor(plot),
+    cultivar = factor(cultivar),
+    intensity_group = factor(intensity_group),
+    treatment = factor(treatment)
+  )
+
+# Generate unified publication Table 1
+tbl_1 <- data_formatted %>%
+  tbl_summary(
+    include = c(year, cultivar, intensity_group, treatment, plot, 
+                rotten_n, rotten_weight, healthy_n, healthy_weight),
+    label = list(
+      year ~ "Year",
+      cultivar ~ "Cultivar",
+      intensity_group ~ "Disease Intensity Group",
+      treatment ~ "Treatment Group",
+      plot ~ "Replicate Plot Block",
+      rotten_n ~ "Rotten Fruit Count",
+      rotten_weight ~ "Rotten Fruit Mass (g)",
+      healthy_n ~ "Healthy Fruit Count",
+      healthy_weight ~ "Healthy Fruit Mass (g)"
+    ),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd}) | {median} [{p25}, {p75}]",
+      all_categorical() ~ "{n} ({p}%)"
+    )
+  ) %>%
+  bold_labels() %>%
+  modify_caption("**Table 1. Overview of Experimental Factors and Harvest Outcomes (N = 96)**")
+
+# Print to R Console or export to Word/HTML
+tbl_1
+# flexstat :: as_flex_table(tbl_1) %>% flextable::save_as_docx(path = "Table1.docx")
+```
+
+All Control observations share one treatment category. Original plot pairs are retained.
+Pooling assumes the control protocols and pulse schedules have no important group-specific effects.
+
+```{r ,echo=FALSE}
+data_clean <- data
+data_clean$year <- factor(data_clean$year)
+data_clean$cultivar <- factor(toupper(trimws(data_clean$cultivar)))
+data_clean$intensity_group <- factor(toupper(trimws(data_clean$intensity_group)))
+data_clean$treatment <- factor(toupper(trimws(data_clean$treatment)), levels=c("CONTROL", "OTC"))
+
+# Define pairs BEFORE pooling the controls.
+data_clean$pair_id <- with(data_clean,interaction(year, cultivar, intensity_group, plot, drop=TRUE))
+
+stopifnot(!anyNA(data_clean$treatment))
+stopifnot(all(table(data_clean$pair_id, data_clean$treatment) == 1))
+
+data_clean$heat_group <- with(data_clean,
+  ifelse(treatment == "CONTROL", "Control", as.character(intensity_group))
+)
+
+data_clean$heat_group <- factor(
+  data_clean$heat_group, levels=c("Control", "A", "B", "C", "D")
+)
+
+stopifnot(!anyNA(data_clean$heat_group))
+
+data_clean$total_weight <- with(data_clean, healthy_weight + rotten_weight)
+stopifnot(all(data_clean$total_weight > 0), all(data_clean$healthy_n + data_clean$rotten_n > 0))
+data_clean$healthy_count_pct <- with(data_clean,100 * healthy_n / (healthy_n + rotten_n))
+data_clean$rotten_count_pct <- with(data_clean, 100*rotten_n / (healthy_n + rotten_n))
+data_clean$healthy_weight_pct <- with(data_clean, 100 * healthy_weight / total_weight)
+data_clean$rotten_weight_pct <- with(data_clean, 100* rotten_weight / total_weight)
+
+
+with(data_clean, table(year, cultivar, heat_group))
+```
+
+```{r, echo=FALSE}
+plot_heat_effects <- function(
+  model,
+  term_pattern = "^heat_group",
+  group_map = c("A" = "4 Pulses (A)", "B" = "3 Pulses (B)", "C" = "2 Pulses (C)", "D" = "1 Pulse (D)"),
+  group_order = c("4 Pulses (A)", "3 Pulses (B)", "2 Pulses (C)", "1 Pulse (D)"),
+  unit = "g",
+  title = "Impact of Heat Stress Pulses on Yield",
+  subtitle = "Change relative to Control baseline (0)",
+  xlab = "Yield Change relative to Control",
+  ylab = "Heat Treatment Level",
+  sig_color = "red",
+  insig_color = "green",
+  conf_level = 0.95
+) {
+  # 1. Extract t-table from model summary
+  tab <- summary(model)$tTable
+  heat_rows <- tab[grepl(term_pattern, rownames(tab)), , drop = FALSE]
+  
+  if (nrow(heat_rows) == 0) {
+    stop("No coefficients matching pattern '", term_pattern, "' were found in the model.")
+  }
+  
+  # 2. Extract clean group names (e.g., "A", "B", "C", "D") and map to display labels
+  raw_levels <- sub(term_pattern, "", rownames(heat_rows))
+  
+  mapped_labels <- if (!is.null(group_map)) {
+    ifelse(raw_levels %in% names(group_map), group_map[raw_levels], raw_levels)
+  } else {
+    raw_levels
+  }
+  
+  alpha <- 1 - conf_level
+  
+  # 3. Build plotting data frame
+  plot_data <- data.frame(
+    group = mapped_labels,
+    estimate = heat_rows[, "Value"],
+    se = heat_rows[, "Std.Error"],
+    df = heat_rows[, "DF"],
+    p_val = heat_rows[, "p-value"]
+  ) %>%
+    mutate(
+      lower = estimate - qt(1 - alpha / 2, df) * se,
+      upper = estimate + qt(1 - alpha / 2, df) * se,
+      group = factor(group, levels = group_order),
+      sig = ifelse(p_val < 0.05, "p < 0.05 (Significant)", "p ≥ 0.05 (Not Significant)"),
+      label_text = paste0(round(estimate, 1), if (nzchar(unit)) paste0(" ", unit) else "")
+    )
+  
+  # 4. Compute dynamic x-axis limits to prevent text label clipping across different scale types
+  x_min <- min(plot_data$lower, na.rm = TRUE)
+  x_max <- max(plot_data$upper, na.rm = TRUE)
+  x_range <- x_max - x_min
+  
+  x_lim_lower <- x_min - (x_range * 0.28)
+  x_lim_upper <- max(10, x_max + (x_range * 0.1))
+  
+  # 5. Build plot
+  ggplot(plot_data, aes(x = estimate, y = group, fill = sig)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_col(width = 0.55, alpha = 0.85) +
+    geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2, color = "black", linewidth = 0.7) +
+    geom_text(
+      aes(x = lower - (x_range * 0.02), label = label_text),
+      hjust = 1, vjust = 0.5, size = 4.5, fontface = "bold"
+    ) +
+    scale_fill_manual(values = c(
+      "p < 0.05 (Significant)" = sig_color, 
+      "p ≥ 0.05 (Not Significant)" = insig_color
+    )) +
+    scale_x_continuous(limits = c(x_lim_lower, x_lim_upper)) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = if (nzchar(unit)) paste0(xlab, " (", unit, ")") else xlab,
+      y = ylab,
+      fill = "Significance"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold", size = 16),
+      plot.subtitle = element_text(color = "gray30", margin = margin(b = 12)),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_blank(),
+      legend.position = "bottom"
+    )
+}
+
+```
+
+
+
+## Model 1: Total fruit weight
+
+```{r total, echo=FALSE}
+m_total <- lme(
+  total_weight ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_total)
+
+anova(m_total, type="marginal")
+
+plot_heat_effects(
+  model = m_total,
+  title = "Impact of Heat Stress Pulses on Total Fruit Yield",
+  unit = "g"
+)
+```
+
+
+
+
+## Model 2: Healthy fruit weight
+
+```{r healthy}
+m_healthy <- lme(
+  healthy_weight ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_healthy)
+anova(m_healthy, type="marginal")
+
+plot_heat_effects(
+  model = m_healthy,
+  title = "Impact of Heat Stress Pulses on Healthy Fruit Yield",
+  unit = "g"
+)
+```
+
+
+## Model 2.1: Rotten fruit weight
+```{r}
+m_rotten <- lme(
+  rotten_weight ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_rotten)
+anova(m_rotten, type="marginal")
+
+plot_heat_effects(
+  model = m_rotten,
+  title = "Impact of Heat Stress Pulses on Rotten Fruit Yield",
+  unit = "g"
+)
+```
+
+## Model 3: Healthy percentage by count
+
+```{r count-rate}
+m_count_pct <- lme(
+  healthy_count_pct ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_count_pct)
+anova(m_count_pct, type="marginal")
+
+plot_heat_effects(
+  model = m_count_pct,
+  title = "Impact of Heat Stress Pulses on Healthy percentage by count",
+  unit = "g"
+)
+```
+
+## Model 3.1: Rotten percentage by count 
+```{r}
+m_rotten_count_pct <- lme(
+  rotten_count_pct ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_rotten_count_pct)
+anova(m_rotten_count_pct, type="marginal")
+
+plot_heat_effects(
+  model = m_rotten_count_pct,
+  title = "Impact of Heat Stress Pulses on Rotten percentage by count",
+  unit = "g"
+)
+```
+
+## Model 4: Healthy percentage by weight
+
+```{r weight-rate}
+m_weight_pct <- lme(
+  healthy_weight_pct ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_weight_pct)
+anova(m_weight_pct, type="marginal")
+
+plot_heat_effects(
+  model = m_weight_pct,
+  title = "Impact of Heat Stress Pulses on Healthy percentage by weight",
+  unit = "g"
+)
+```
+
+## Model 4.1: Rotten percentage by weight 
+```{r}
+m_rotten_pct <- lme(
+  rotten_weight_pct ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_rotten_pct)
+anova(m_rotten_pct, type="marginal")
+
+plot_heat_effects(
+  model = m_rotten_pct,
+  title = "Impact of Heat Stress Pulses on Rotten percentage by weight",
+  unit = "g"
+)
+
+```
+
+
+
+## A-D versus the common Control
+
+In the additive models, heat_group coefficients are adjusted A-D minus Control
+differences, assumed common across years and cultivars. Weights are in grams;
+healthy percentage differences are in percentage points. Intervals are pointwise.
+Holm p values are adjusted across the four contrasts within each response.
+
+```{r contrasts}
+models <- list(total_weight=m_total, healthy_weight=m_healthy,
+               healthy_count_pct=m_count_pct, healthy_weight_pct=m_weight_pct)
+effects <- do.call(rbind, lapply(names(models), function(name) {
+  fit <- models[[name]]
+  tab <- summary(fit)$tTable
+  tab <- tab[grepl("^heat_group", rownames(tab)), , drop=FALSE]
+  data.frame(outcome=name,
+    comparison=paste(sub("heat_group", "", rownames(tab)), "- Control"),
+    estimate=tab[, "Value"],
+    lower=tab[, "Value"] - qt(.975, tab[, "DF"]) * tab[, "Std.Error"],
+    upper=tab[, "Value"] + qt(.975, tab[, "DF"]) * tab[, "Std.Error"],
+    p_value=tab[, "p-value"],
+    p_holm=p.adjust(tab[, "p-value"], method="holm"), row.names=NULL)
+}))
+knitr::kable(effects, digits=4)
+
+```
+
+```{r}
+# 1. Format the 'effects' data frame for plotting
+effects_plot_data <- effects %>%
+  # Support column names from both base-R (lower/upper) and broom (conf.low/conf.high)
+  mutate(
+    ci_lower = if ("lower" %in% names(.)) lower else conf.low,
+    ci_upper = if ("upper" %in% names(.)) upper else conf.high,
+    p_adj    = if ("p_holm" %in% names(.)) p_holm else p_value,
+    
+    # Human-readable panel headers
+    outcome_label = factor(outcome, 
+      levels = c("total_weight", "healthy_weight", "healthy_count_pct", "healthy_weight_pct"),
+      labels = c("Total Weight (g)", "Healthy Weight (g)", "Healthy Count (%)", "Healthy Weight (%)")
+    ),
+    
+    # Clean group order: D (1 pulse) at top to A (4 pulses) at bottom
+    comparison_label = factor(comparison,
+      levels = c("D - Control", "C - Control", "B - Control", "A - Control"),
+      labels = c("D (1 Pulse)", "C (2 Pulses)", "B (3 Pulses)", "A (4 Pulses)")
+    ),
+    
+    # Significance indicator after Holm correction
+    sig_status = ifelse(p_adj < 0.05, "Significant (p < 0.05)", "Not Significant")
+  )
+
+# 2. Build the Multi-Panel Forest Plot
+ggplot(effects_plot_data, aes(x = estimate, y = comparison_label, color = sig_status)) +
+  # Reference line at 0 (No effect compared to Control)
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+  # 95% Confidence Interval error bars
+  geom_errorbarh(aes(xmin = ci_lower, xmax = ci_upper), height = 0.25, linewidth = 0.8) +
+  # Point estimates
+  geom_point(size = 3) +
+  # Numerical text labels above points
+  geom_text(
+    aes(label = sprintf("%.1f", estimate)),
+    vjust = -0.8, size = 3.5, fontface = "bold", show.legend = FALSE
+  ) +
+  # Facet by model outcome with independent x-axis scales (grams vs. %)
+  facet_wrap(~ outcome_label, scales = "free_x", ncol = 2) +
+  scale_color_manual(values = c(
+    "Significant (p < 0.05)" = "#d95f02",
+    "Not Significant" = "#7570b3"
+  )) +
+  labs(
+    title = "Heat Treatment Effects relative to Control",
+    subtitle = "Point estimates with pointwise 95% CIs across all four model outcomes",
+    x = "Estimated Difference from Unheated Control",
+    y = "Heat Pulse Intensity",
+    color = "Holm Significance"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    plot.subtitle = element_text(color = "gray30", margin = margin(b = 10)),
+    strip.background = element_rect(fill = "gray92", color = NA),
+    strip.text = element_text(face = "bold", size = 11),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+### Does the heat response differ between cultivars?
+
+These candidate models retain a common Control category but allow the A-D effects
+to vary by cultivar. Compare fixed effects using ML; do not automatically select
+a model based on one p value.
+
+
+
+```{r cultivar-interaction}
+m_total_cultivar <- update(m_total, . ~ . + heat_group:cultivar)
+m_healthy_cultivar <- update(m_healthy, . ~ . + heat_group:cultivar)
+m_count_pct_cultivar <- update(m_count_pct, . ~ . + heat_group:cultivar)
+m_weight_pct_cultivar <- update(m_weight_pct, . ~ . + heat_group:cultivar)
+m_rotten_pct_cultivar <- update(m_rotten_pct, . ~ . + heat_group:cultivar)
+
+anova(m_total, m_total_cultivar)
+anova(m_healthy, m_healthy_cultivar)
+anova(m_count_pct, m_count_pct_cultivar)
+anova(m_weight_pct, m_weight_pct_cultivar)
+anova(m_rotten_pct, m_rotten_pct_cultivar)
+```
+
+```{r}
+library(emmeans)
+library(ggplot2)
+library(dplyr)
+
+plot_emmeans_by_cultivar <- function(
+  model,
+  x_var = "heat_group",
+  facet_var = "cultivar",
+  x_order = c("Control", "D", "C", "B", "A"),
+  x_labels = c("Control (0)", "D (1 Pulse)", "C (2 Pulses)", "B (3 Pulses)", "A (4 Pulses)"),
+  title = "Fruit Response to Heat Pulses by Cultivar",
+  subtitle = "Interaction model adjusted means ± 95% CI",
+  xlab = "Heat Treatment Scheme",
+  ylab = "Adjusted Weight",
+  unit = "g",
+  base_size = 13
+) {
+  # 1. Construct formula dynamically (~ x_var | facet_var)
+  emm_formula <- as.formula(paste("~", x_var, "|", facet_var))
+  
+  # 2. Extract EMMs as a data frame
+  emm_df <- as.data.frame(emmeans(model, emm_formula))
+  
+  # 3. Dynamic CI column detection (handles lower.CL/upper.CL or asym.LCL/asym.UCL)
+  lower_col <- names(emm_df)[grep("lower|LCL", names(emm_df), ignore.case = TRUE)][1]
+  upper_col <- names(emm_df)[grep("upper|UCL", names(emm_df), ignore.case = TRUE)][1]
+  
+  emm_df$lower_ci <- emm_df[[lower_col]]
+  emm_df$upper_ci <- emm_df[[upper_col]]
+  
+  # Assign standardized variables for plotting
+  emm_df$x_val <- emm_df[[x_var]]
+  emm_df$facet_val <- emm_df[[facet_var]]
+  
+  # 4. Reorder and relabel X-axis factor levels logically
+  if (!is.null(x_order)) {
+    existing_levels <- levels(factor(emm_df$x_val))
+    valid_order <- intersect(x_order, existing_levels)
+    
+    if (length(valid_order) > 0) {
+      emm_df$x_val <- factor(emm_df$x_val, levels = valid_order)
+      if (!is.null(x_labels) && length(x_labels) == length(valid_order)) {
+        levels(emm_df$x_val) <- x_labels
+      }
+    }
+  }
+  
+  # 5. Build ggplot
+  y_title <- if (nzchar(unit)) paste0(ylab, " (", unit, ")") else ylab
+  
+  ggplot(emm_df, aes(x = x_val, y = emmean, group = facet_val, color = facet_val)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.15, linewidth = 0.7) +
+    facet_wrap(~ facet_val) +
+    labs(
+      title = title,
+      subtitle = subtitle,
+      x = xlab,
+      y = y_title
+    ) +
+    theme_bw(base_size = base_size) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      legend.position = "none",
+      axis.text.x = element_text(angle = 30, hjust = 1)
+    )
+}
+```
+
+```{r}
+plot_emmeans_by_cultivar(
+  model = m_total_cultivar,
+  title = "Total Fruit Yield Response to Heat Pulses by Cultivar",
+  ylab = "Adjusted Total Weight",
+  unit = "g"
+)
+```
+
+```{r}
+plot_emmeans_by_cultivar(
+  model = m_healthy_cultivar,
+  title = "Healthy Fruit Yield Response to Heat Pulses by Cultivar",
+  ylab = "Adjusted Healthy Weight",
+  unit = "g"
+)
+```
+
+```{r}
+plot_emmeans_by_cultivar(
+  model = m_rotten_pct_cultivar,
+  title = "Rotten Fruit Percentage by Cultivar",
+  ylab = "Rotten Fruit Weight",
+  unit = "%"
+)
+```
+
+
+## Intensity comparisons: A-D
+
+A, B, C and D correspond to 4, 3, 2 and 1 heat pulses.
+Weight outcomes use the cultivar-interaction models; percentage outcomes use
+additive models. Means are averaged equally over years (and cultivars for
+percentage outcomes). Controls remain pooled within each year and cultivar.
+Comparisons use Holm correction for the six A-D pairs within each outcome/cultivar;
+confidence intervals are pointwise 95%, not simultaneous. Degrees of freedom
+use a conservative minimum over the fixed coefficients involved.
+
+```{r intensity-helper}
+# No additional packages are required.
+intensity_results <- function(fit, cultivar_level=NULL) {
+  grid <- expand.grid(
+    year=levels(data_clean$year),
+    cultivar=if (is.null(cultivar_level)) levels(data_clean$cultivar) else cultivar_level,
+    heat_group=levels(data_clean$heat_group)
+  )
+  grid$year <- factor(grid$year, levels=levels(data_clean$year))
+  grid$cultivar <- factor(grid$cultivar, levels=levels(data_clean$cultivar))
+  grid$heat_group <- factor(grid$heat_group, levels=levels(data_clean$heat_group))
+  X <- model.matrix(delete.response(terms(formula(fit))), grid)
+  X <- X[, names(fixef(fit)), drop=FALSE]
+  mean_X <- do.call(rbind, lapply(levels(data_clean$heat_group), function(g) {
+    colMeans(X[grid$heat_group == g, , drop=FALSE])
+  }))
+  rownames(mean_X) <- levels(data_clean$heat_group)
+
+  estimate_contrast <- function(L) {
+    estimate <- as.numeric(L %*% fixef(fit))
+    se <- sqrt(as.numeric(L %*% vcov(fit) %*% L))
+    df <- min(fit$fixDF$X[abs(L) > 1e-10])
+    data.frame(estimate=estimate, SE=se, df=df,
+      lower=estimate-qt(.975,df)*se,
+      upper=estimate+qt(.975,df)*se,
+      p_value=2*pt(-abs(estimate/se),df))
+  }
+  means <- do.call(rbind, lapply(rownames(mean_X), function(g) {
+    cbind(group=g, estimate_contrast(mean_X[g, ]))
+  }))
+  # Pairwise comparisons ONLY among heated groups.
+  pairs <- combn(c("A", "B", "C", "D"), 2, simplify=FALSE)
+  comparisons <- do.call(rbind, lapply(pairs, function(g) {
+    cbind(comparison=paste(g, collapse=" - "),
+      estimate_contrast(mean_X[g[1], ] - mean_X[g[2], ]))
+  }))
+  comparisons$p_holm <- p.adjust(comparisons$p_value, method="holm")
+  list(means=means, comparisons=comparisons)
+}
+
+# A-D scheme effects relative to the common Control can also be compared
+# by subtracting each scheme's mean_X row from another, as above:
+# (A - Control) - (B - Control) = A - B.
+```
+
+```{r intensity-tables-plots, results='asis', fig.width=8, fig.height=5}
+intensity_models <- list(
+  total_weight=m_total_cultivar,
+  healthy_weight=m_healthy_cultivar,
+  healthy_count_pct=m_count_pct,
+  healthy_weight_pct=m_weight_pct
+)
+intensity_export <- list()
+
+for (outcome in names(intensity_models)) {
+  fit <- intensity_models[[outcome]]
+  is_weight <- outcome %in% c("total_weight", "healthy_weight")
+  groups <- if (is_weight) levels(data_clean$cultivar) else "Both cultivars"
+  for (g in groups) {
+    result <- intensity_results(fit, if (is_weight) g else NULL)
+    cat("\n\n### ", outcome, ": ", g, "\n\n", sep="")
+    # A mean-vs-zero p value is not relevant here, so omit it.
+    print(knitr::kable(result$means[c("group","estimate","SE","lower","upper")],
+      digits=2, caption="Adjusted means and pointwise 95% confidence intervals"))
+    cat("\n\n")
+    print(knitr::kable(result$comparisons, digits=4,
+      caption="A-D comparisons; negative estimates mean the first group is lower"))
+    cat("\n\n")
+
+    # Order the plot by pulse count: Control, D, C, B, A.
+    z <- result$means[match(c("Control","D","C","B","A"),result$means$group), ]
+    plot(0:4, z$estimate, type="b", pch=19, xaxt="n",
+      ylim=range(z$lower,z$upper), xlab="Heat pulses",
+      ylab=if (is_weight) "Adjusted weight (g)" else "Adjusted healthy percentage (%)",
+      main=paste(outcome,g))
+    axis(1, at=0:4, labels=c("Control","D: 1","C: 2","B: 3","A: 4"))
+    arrows(0:4,z$lower,0:4,z$upper,angle=90,code=3,length=.05)
+    # Lines guide the eye; the model treats pulse schemes as categories.
+    intensity_export[[paste(outcome,g)]] <- list(means=result$means,
+                                                comparisons=result$comparisons)
+  }
+}
+```
+
+Pulse timing also differs across A-D; these are scheme comparisons, not a
+confirmed causal effect per additional pulse. The connecting lines do not imply
+a fitted linear trend. Control has no active heating; its chamber protocol is
+assumed comparable across the original intensity groups.
+
+### Discuss 
+```{r}
+library(emmeans)
+
+# 1. Calculate adjusted marginal means
+emms <- emmeans(m_total_cultivar, ~ heat_group | cultivar)
+
+# 2. Pairwise comparisons among A-D (excluding Control) with Holm adjustment
+pairs_AD <- contrast(emms, "pairwise", combine = TRUE, adjust = "holm") %>%
+  as.data.frame() %>%
+  filter(!grepl("Control", contrast))
+
+# 3. Plot dose-response curve
+plot(emms)
+```
+## Diagnostics
+
+```{r diagnostics, fig.width=9, fig.height=4}
+models <- intensity_models
+for (name in names(models)) {
+  fit <- models[[name]]
+  r <- residuals(fit, type="normalized")
+  par(mfrow=c(1,2))
+  plot(fitted(fit), r, xlab="Fitted", ylab="Normalized residual", main=name)
+  abline(h=0, lty=2)
+  qqnorm(r); qqline(r)
+}
+par(mfrow=c(1,1))
+```
+
+These are preliminary Gaussian mixed models. Percentage responses require
+particular care with residual variance, normality and predictions outside 0-100.
+Consider beta-binomial (count percentage) or beta (weight percentage) models if needed.
+Cultivar is confounded with field; year effects do not identify a weather or alternate-bearing mechanism.

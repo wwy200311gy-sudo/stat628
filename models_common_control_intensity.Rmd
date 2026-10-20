@@ -1,0 +1,266 @@
+---
+title: "Cranberry Models: Common Control"
+output: html_document
+params:
+  data_file: "acute_yield_data_fall_2026.csv"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE)
+library(nlme)
+```
+
+## Data
+
+All Control observations share one treatment category. Original plot pairs are retained.
+Pooling assumes the control protocols and pulse schedules have no important group-specific effects.
+
+```{r data}
+data_clean <- read.csv(params$data_file)
+data_clean$year <- factor(data_clean$year)
+data_clean$cultivar <- factor(toupper(trimws(data_clean$cultivar)))
+data_clean$intensity_group <- factor(toupper(trimws(data_clean$intensity_group)))
+data_clean$treatment <- factor(
+  toupper(trimws(data_clean$treatment)), levels=c("CONTROL", "OTC")
+)
+
+# Define pairs BEFORE pooling the controls.
+data_clean$pair_id <- with(data_clean,
+  interaction(year, cultivar, intensity_group, plot, drop=TRUE)
+)
+stopifnot(!anyNA(data_clean$treatment))
+stopifnot(all(table(data_clean$pair_id, data_clean$treatment) == 1))
+
+data_clean$heat_group <- with(data_clean,
+  ifelse(treatment == "CONTROL", "Control", as.character(intensity_group))
+)
+data_clean$heat_group <- factor(
+  data_clean$heat_group, levels=c("Control", "A", "B", "C", "D")
+)
+stopifnot(!anyNA(data_clean$heat_group))
+
+data_clean$total_weight <- with(data_clean, healthy_weight + rotten_weight)
+stopifnot(all(data_clean$total_weight > 0),
+          all(data_clean$healthy_n + data_clean$rotten_n > 0))
+data_clean$healthy_count_pct <- with(data_clean,
+  100 * healthy_n / (healthy_n + rotten_n)
+)
+data_clean$healthy_weight_pct <- with(data_clean,
+  100 * healthy_weight / total_weight
+)
+with(data_clean, table(year, cultivar, heat_group))
+```
+
+## Model 1: Total fruit weight
+
+```{r total}
+m_total <- lme(
+  total_weight ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_total)
+anova(m_total, type="marginal")
+```
+
+## Model 2: Healthy fruit weight
+
+```{r healthy}
+m_healthy <- lme(
+  healthy_weight ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_healthy)
+anova(m_healthy, type="marginal")
+```
+
+## Model 3: Healthy percentage by count
+
+```{r count-rate}
+m_count_pct <- lme(
+  healthy_count_pct ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_count_pct)
+anova(m_count_pct, type="marginal")
+```
+
+## Model 4: Healthy percentage by weight
+
+```{r weight-rate}
+m_weight_pct <- lme(
+  healthy_weight_pct ~ year * cultivar + heat_group,
+  random=~1 | pair_id,
+  data=data_clean, method="ML",
+  control=lmeControl(opt="optim")
+)
+summary(m_weight_pct)
+anova(m_weight_pct, type="marginal")
+```
+
+## A-D versus the common Control
+
+In the additive models, heat_group coefficients are adjusted A-D minus Control
+differences, assumed common across years and cultivars. Weights are in grams;
+healthy percentage differences are in percentage points. Intervals are pointwise.
+Holm p values are adjusted across the four contrasts within each response.
+
+```{r contrasts}
+models <- list(total_weight=m_total, healthy_weight=m_healthy,
+               healthy_count_pct=m_count_pct, healthy_weight_pct=m_weight_pct)
+effects <- do.call(rbind, lapply(names(models), function(name) {
+  fit <- models[[name]]
+  tab <- summary(fit)$tTable
+  tab <- tab[grepl("^heat_group", rownames(tab)), , drop=FALSE]
+  data.frame(outcome=name,
+    comparison=paste(sub("heat_group", "", rownames(tab)), "- Control"),
+    estimate=tab[, "Value"],
+    lower=tab[, "Value"] - qt(.975, tab[, "DF"]) * tab[, "Std.Error"],
+    upper=tab[, "Value"] + qt(.975, tab[, "DF"]) * tab[, "Std.Error"],
+    p_value=tab[, "p-value"],
+    p_holm=p.adjust(tab[, "p-value"], method="holm"), row.names=NULL)
+}))
+knitr::kable(effects, digits=4)
+```
+
+## Does the heat response differ between cultivars?
+
+These candidate models retain a common Control category but allow the A-D effects
+to vary by cultivar. Compare fixed effects using ML; do not automatically select
+a model based on one p value.
+
+```{r cultivar-interaction}
+m_total_cultivar <- update(m_total, . ~ . + heat_group:cultivar)
+m_healthy_cultivar <- update(m_healthy, . ~ . + heat_group:cultivar)
+m_count_pct_cultivar <- update(m_count_pct, . ~ . + heat_group:cultivar)
+m_weight_pct_cultivar <- update(m_weight_pct, . ~ . + heat_group:cultivar)
+
+anova(m_total, m_total_cultivar)
+anova(m_healthy, m_healthy_cultivar)
+anova(m_count_pct, m_count_pct_cultivar)
+anova(m_weight_pct, m_weight_pct_cultivar)
+```
+
+## Intensity comparisons: A-D
+
+A, B, C and D correspond to 4, 3, 2 and 1 heat pulses.
+Weight outcomes use the cultivar-interaction models; percentage outcomes use
+additive models. Means are averaged equally over years (and cultivars for
+percentage outcomes). Controls remain pooled within each year and cultivar.
+Comparisons use Holm correction for the six A-D pairs within each outcome/cultivar;
+confidence intervals are pointwise 95%, not simultaneous. Degrees of freedom
+use a conservative minimum over the fixed coefficients involved.
+
+```{r intensity-helper}
+# No additional packages are required.
+intensity_results <- function(fit, cultivar_level=NULL) {
+  grid <- expand.grid(
+    year=levels(data_clean$year),
+    cultivar=if (is.null(cultivar_level)) levels(data_clean$cultivar) else cultivar_level,
+    heat_group=levels(data_clean$heat_group)
+  )
+  grid$year <- factor(grid$year, levels=levels(data_clean$year))
+  grid$cultivar <- factor(grid$cultivar, levels=levels(data_clean$cultivar))
+  grid$heat_group <- factor(grid$heat_group, levels=levels(data_clean$heat_group))
+  X <- model.matrix(delete.response(terms(formula(fit))), grid)
+  X <- X[, names(fixef(fit)), drop=FALSE]
+  mean_X <- do.call(rbind, lapply(levels(data_clean$heat_group), function(g) {
+    colMeans(X[grid$heat_group == g, , drop=FALSE])
+  }))
+  rownames(mean_X) <- levels(data_clean$heat_group)
+
+  estimate_contrast <- function(L) {
+    estimate <- as.numeric(L %*% fixef(fit))
+    se <- sqrt(as.numeric(L %*% vcov(fit) %*% L))
+    df <- min(fit$fixDF$X[abs(L) > 1e-10])
+    data.frame(estimate=estimate, SE=se, df=df,
+      lower=estimate-qt(.975,df)*se,
+      upper=estimate+qt(.975,df)*se,
+      p_value=2*pt(-abs(estimate/se),df))
+  }
+  means <- do.call(rbind, lapply(rownames(mean_X), function(g) {
+    cbind(group=g, estimate_contrast(mean_X[g, ]))
+  }))
+  # Pairwise comparisons ONLY among heated groups.
+  pairs <- combn(c("A", "B", "C", "D"), 2, simplify=FALSE)
+  comparisons <- do.call(rbind, lapply(pairs, function(g) {
+    cbind(comparison=paste(g, collapse=" - "),
+      estimate_contrast(mean_X[g[1], ] - mean_X[g[2], ]))
+  }))
+  comparisons$p_holm <- p.adjust(comparisons$p_value, method="holm")
+  list(means=means, comparisons=comparisons)
+}
+
+# A-D scheme effects relative to the common Control can also be compared
+# by subtracting each scheme's mean_X row from another, as above:
+# (A - Control) - (B - Control) = A - B.
+```
+
+```{r intensity-tables-plots, results='asis', fig.width=8, fig.height=5}
+intensity_models <- list(
+  total_weight=m_total_cultivar,
+  healthy_weight=m_healthy_cultivar,
+  healthy_count_pct=m_count_pct,
+  healthy_weight_pct=m_weight_pct
+)
+intensity_export <- list()
+
+for (outcome in names(intensity_models)) {
+  fit <- intensity_models[[outcome]]
+  is_weight <- outcome %in% c("total_weight", "healthy_weight")
+  groups <- if (is_weight) levels(data_clean$cultivar) else "Both cultivars"
+  for (g in groups) {
+    result <- intensity_results(fit, if (is_weight) g else NULL)
+    cat("\n\n### ", outcome, ": ", g, "\n\n", sep="")
+    # A mean-vs-zero p value is not relevant here, so omit it.
+    print(knitr::kable(result$means[c("group","estimate","SE","lower","upper")],
+      digits=2, caption="Adjusted means and pointwise 95% confidence intervals"))
+    cat("\n\n")
+    print(knitr::kable(result$comparisons, digits=4,
+      caption="A-D comparisons; negative estimates mean the first group is lower"))
+    cat("\n\n")
+
+    # Order the plot by pulse count: Control, D, C, B, A.
+    z <- result$means[match(c("Control","D","C","B","A"),result$means$group), ]
+    plot(0:4, z$estimate, type="b", pch=19, xaxt="n",
+      ylim=range(z$lower,z$upper), xlab="Heat pulses",
+      ylab=if (is_weight) "Adjusted weight (g)" else "Adjusted healthy percentage (%)",
+      main=paste(outcome,g))
+    axis(1, at=0:4, labels=c("Control","D: 1","C: 2","B: 3","A: 4"))
+    arrows(0:4,z$lower,0:4,z$upper,angle=90,code=3,length=.05)
+    # Lines guide the eye; the model treats pulse schemes as categories.
+    intensity_export[[paste(outcome,g)]] <- list(means=result$means,
+                                                comparisons=result$comparisons)
+  }
+}
+```
+
+Pulse timing also differs across A-D; these are scheme comparisons, not a
+confirmed causal effect per additional pulse. The connecting lines do not imply
+a fitted linear trend. Control has no active heating; its chamber protocol is
+assumed comparable across the original intensity groups.
+
+## Diagnostics
+
+```{r diagnostics, fig.width=9, fig.height=4}
+models <- intensity_models
+for (name in names(models)) {
+  fit <- models[[name]]
+  r <- residuals(fit, type="normalized")
+  par(mfrow=c(1,2))
+  plot(fitted(fit), r, xlab="Fitted", ylab="Normalized residual", main=name)
+  abline(h=0, lty=2)
+  qqnorm(r); qqline(r)
+}
+par(mfrow=c(1,1))
+```
+
+These are preliminary Gaussian mixed models. Percentage responses require
+particular care with residual variance, normality and predictions outside 0-100.
+Consider beta-binomial (count percentage) or beta (weight percentage) models if needed.
+Cultivar is confounded with field; year effects do not identify a weather or alternate-bearing mechanism.

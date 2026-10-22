@@ -1,0 +1,343 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-10-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lme4)
+  library(glmmTMB)
+  library(emmeans)
+  library(DHARMa)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(knitr)
+```
+
+## clean data
+```{r}
+data_file <- "acute_yield_data_fall_2026.csv"
+if (!file.exists(data_file)) {
+  data_file <- "https://raw.githubusercontent.com/wwy200311gy-sudo/stat628/refs/heads/main/acute_yield_data_fall_2026.csv"
+}
+d_raw <- read.csv(data_file)
+
+d <- d_raw %>%
+  mutate(
+    year = factor(year),
+    cultivar = factor(toupper(trimws(cultivar))),
+    intensity_group = factor(toupper(trimws(intensity_group)),
+                               levels = c("D", "C", "B", "A")),
+    treatment = factor(toupper(trimws(treatment)),
+                               levels = c("CONTROL", "OTC"),
+                               labels = c("Control", "OTC")),
+    heat_group = factor(
+      ifelse(treatment == "Control", "Control", as.character(intensity_group)),
+      levels = c("Control", "D", "C", "B", "A")
+    ),
+    pair = interaction(year, cultivar, intensity_group, plot,
+                                    drop = TRUE),
+    total_weight = healthy_weight + rotten_weight,
+    healthy_count_pct = 100 * healthy_n / (healthy_n + rotten_n),
+    healthy_weight_prop = healthy_weight / total_weight,
+    healthy_weight_pct  = 100 * healthy_weight_prop,
+    pulses = as.numeric(c(A = 4, B = 3, C = 2, D = 1)[
+                                      as.character(intensity_group)])
+  )
+
+# Design checks -------------------------------------------------------------
+stopifnot(nrow(d) == 96, nlevels(d$pair) == 48)
+stopifnot(!anyNA(d$heat_group))
+stopifnot(all(d %>% count(pair) %>% pull(n) == 2))
+stopifnot(all(d %>%
+  group_by(pair) %>%
+  summarise(ok = setequal(as.character(treatment), c("Control", "OTC")),
+            .groups = "drop") %>%
+  pull(ok)))
+stopifnot(all(d$total_weight > 0), all(d$healthy_n + d$rotten_n > 0))
+
+```
+## model design
+
+Before fitting the models, we use the data to check the modelling choices:
+the response scale, the mean-variance relationship, the pair structure, and
+which interactions are plausible.
+
+## Response scale
+
+```{r }
+d %>%
+  transmute(`Total weight (g)` = total_weight,
+            `log(total weight)` = log(total_weight)) %>%
+  pivot_longer(everything(), names_to = "scale", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 20, fill = "grey70", colour = "white") +
+  facet_wrap(~ scale, scales = "free") +
+  labs(x = NULL, y = "Count",
+       title = "Total weight on the raw and log scales") +
+  theme_bw(base_size = 11)
+```
+
+```{r design-residuals, fig.width=9, fig.height=4.5, fig.cap="Absolute residuals vs fitted values from a Gaussian model. The raw scale shows a mild increase in spread with the fitted value; the log scale is flatter. This supports modelling log(total weight)."}
+m_raw <- lm(total_weight ~ heat_group * year + cultivar, data = d)
+m_log <- lm(log(total_weight) ~ heat_group * year + cultivar, data = d)
+
+bind_rows(
+  data.frame(fitted = fitted(m_raw), abs_resid = abs(resid(m_raw)),
+             scale = "Raw scale"),
+  data.frame(fitted = fitted(m_log), abs_resid = abs(resid(m_log)),
+             scale = "Log scale")
+) %>%
+  ggplot(aes(x = fitted, y = abs_resid)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, colour = "tomato") +
+  facet_wrap(~ scale, scales = "free") +
+  labs(x = "Fitted value", y = "|Residual|",
+       title = "Absolute residuals vs fitted values: raw vs log scale") +
+  theme_bw(base_size = 11)
+```
+
+The raw-scale residuals spread out more at high fitted values, while the log-scale
+residuals are more even. Together with the positive support, this motivates the
+log-normal LMM for total weight.
+
+## Pair structure
+
+```{r design-pairs, fig.width=6.5, fig.height=5, fig.cap="Control and heat total weights within the same pair are strongly correlated (r = 0.84). This supports the pair random intercept (1 | pair)."}
+pair_heat <- d %>%
+  filter(treatment == "OTC") %>%
+  select(pair, heat_group)
+
+wide <- d %>%
+  select(pair, treatment, total_weight) %>%
+  pivot_wider(names_from = treatment, values_from = total_weight,
+              id_cols = pair) %>%
+  left_join(pair_heat, by = "pair")
+
+cor_pair <- cor(wide$Control, wide$OTC)
+
+ggplot(wide, aes(x = Control, y = OTC, colour = heat_group)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey40") +
+  geom_point(size = 2, alpha = 0.85) +
+  scale_colour_manual(values = c(D = "#fee5d9", C = "#fcae91",
+                                 B = "#fb6a4a", A = "#cb181d")) +
+  labs(x = "Control total weight (g)", y = "Heat total weight (g)",
+       colour = "Heat group",
+       title = sprintf("Within-pair correlation: r = %.2f", cor_pair)) +
+  theme_bw(base_size = 11)
+```
+
+The within-pair correlation is about 0.84 (and 0.75–0.93 within the four heat
+levels). The two plots in a pair are not independent, so the model needs a
+`(1 | pair)` random intercept.
+
+## Which interactions are plausible?
+
+```{r design-heat-year, fig.width=9, fig.height=4.5, fig.cap="Mean total weight by heat group and year, separately for each cultivar. The 2024 and 2025 profiles differ: 2025 is lower overall, and MQ declines sharply at B/A in 2025 while ST is flatter. This supports a heat_group x year interaction."}
+summ_hy <- d %>%
+  group_by(heat_group, year, cultivar) %>%
+  summarise(mean = mean(total_weight),
+            se = sd(total_weight) / sqrt(n()),
+            .groups = "drop")
+
+ggplot(summ_hy, aes(x = heat_group, y = mean, colour = year, group = year)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.12) +
+  facet_wrap(~ cultivar) +
+  labs(x = "Heat group (D = 1, C = 2, B = 3, A = 4 pulses)",
+       y = "Mean total weight (g)", colour = "Year",
+       title = "Heat group x year, separately by cultivar") +
+  theme_bw(base_size = 11)
+```
+
+```{r design-heat-cultivar, fig.width=9, fig.height=4.5, fig.cap="Mean total weight by heat group and cultivar, separately by year. MQ and ST differ mainly in level; their heat profiles are similar enough that a heat_group x cultivar interaction is not obviously required, but it is tested in H1."}
+ggplot(summ_hy, aes(x = heat_group, y = mean, colour = cultivar, group = cultivar)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.12) +
+  facet_wrap(~ year) +
+  labs(x = "Heat group (D = 1, C = 2, B = 3, A = 4 pulses)",
+       y = "Mean total weight (g)", colour = "Cultivar",
+       title = "Heat group x cultivar, separately by year") +
+  theme_bw(base_size = 11)
+```
+
+```{r design-year-cultivar, fig.width=6.5, fig.height=4.5, fig.cap="Mean total weight by year and cultivar. The large 2025 ST drop supports a year x cultivar baseline term."}
+summ_yc <- d %>%
+  group_by(year, cultivar) %>%
+  summarise(mean = mean(total_weight),
+            se = sd(total_weight) / sqrt(n()),
+            .groups = "drop")
+
+ggplot(summ_yc, aes(x = year, y = mean, colour = cultivar, group = cultivar)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.12) +
+  labs(x = "Year", y = "Mean total weight (g)", colour = "Cultivar",
+       title = "Year x cultivar baseline") +
+  theme_bw(base_size = 11)
+```
+
+The figures support the following model structure:
+
+- **log(total_weight)** rather than raw weight: the response is positive, the
+  effects are naturally multiplicative, and the log-scale residuals are more
+  homogeneous.
+- **(1 | pair)**: control and heat plots in the same pair are strongly
+  correlated, so the pair must be a random effect.
+- **heat_group × year**: the 2024 and 2025 profiles have different shapes,
+  especially for MQ; ST is much lower in 2025.
+- **year:cultivar**: 2025 ST is much lower than 2024 ST, a baseline shift that
+  is not a heat effect.
+- **heat_group × cultivar**: MQ and ST differ mainly in level; their heat
+  profiles are similar enough that the interaction is tested but not obviously
+  required.
+
+The model-building section below fits the candidate models H0–H4 and compares
+them with AIC and likelihood-ratio tests.
+
+## model build
+```{r}
+fit_lmm <- function(form) lmer(form, data = d, REML = FALSE)
+# Total weight
+h0_total <- fit_lmm(log(total_weight) ~ heat_group + cultivar + year + year:cultivar + (1 | pair))
+
+h1_total <- fit_lmm(log(total_weight) ~ heat_group * cultivar + year + year:cultivar + (1 | pair))
+
+h2_total <- fit_lmm(log(total_weight) ~ heat_group * year + cultivar + year:cultivar + (1 | pair))
+
+h3_total <- fit_lmm(log(total_weight) ~ heat_group * (cultivar + year) + year:cultivar + (1 | pair))
+
+h4_total <- fit_lmm(log(total_weight) ~ treatment * intensity_group + cultivar + year + year:cultivar + (1 | pair))
+
+```
+```{r}
+aic_tab <- bind_rows(
+  data.frame(Response = "Total",   Model = c("H0", "H1", "H2", "H3", "H4"),
+             df = sapply(list(h0_total, h1_total, h2_total, h3_total, h4_total),
+                         function(m) attr(logLik(m), "df")),
+             AIC = sapply(list(h0_total, h1_total, h2_total, h3_total, h4_total), AIC)),
+) %>%
+  group_by(Response) %>%
+  mutate(dAIC = AIC - min(AIC)) %>%
+  ungroup()
+kable(aic_tab)
+
+```
+
+We can choose h2_total, which has the smallest AIC. 
+
+We refit the selected H2 model with REML for the final estimates:
+
+```{r h2-formula}
+h2_final <- lmer(log(total_weight) ~ heat_group * year + cultivar + year:cultivar +
+                   (1 | pair), data = d, REML = TRUE)
+
+formula(h2_final)
+```
+
+$$
+\log Y_i=\mu+\alpha_{g_i}+\beta_{t_i}+(\alpha\beta)_{g_i t_i}
++\gamma_{c_i}+(\beta\gamma)_{t_i c_i}+b_{k(i)}+\varepsilon_i,
+\qquad b_k\sim N(0,\sigma_b^2),\quad \varepsilon_i\sim N(0,\sigma^2),
+$$
+
+where $Y_i$ is `total_weight` (g), $g_i$ is the heat group, $t_i$ the year and
+$c_i$ the cultivar. The reference levels are Control, 2024 and MQ, so the
+heat-group coefficients are log ratios relative to Control in 2024 for MQ, and
+the `:year2025` terms add the extra change in 2025.
+
+## Coefficients of the selected H2 model
+
+```{r h2-coefficients}
+h2_coef <- summary(h2_final)$coefficients
+
+h2_coef_tab <- data.frame(
+  term         = rownames(h2_coef),
+  estimate     = h2_coef[, "Estimate"],
+  std_error    = h2_coef[, "Std. Error"],
+  t_value      = h2_coef[, "t value"],
+  p_value      = format.pval(2 * pnorm(-abs(h2_coef[, "t value"])),
+                             digits = 3, eps = 1e-4),
+  exp_estimate = exp(h2_coef[, "Estimate"]),
+  lower_95     = exp(h2_coef[, "Estimate"] - 1.96 * h2_coef[, "Std. Error"]),
+  upper_95     = exp(h2_coef[, "Estimate"] + 1.96 * h2_coef[, "Std. Error"]),
+  row.names    = NULL
+)
+
+kable(h2_coef_tab, digits = 4,
+      col.names = c("Term", "Estimate (log)", "SE", "t", "p",
+                    "exp(Estimate)", "95% lower", "95% upper"))
+```
+
+How to read the rows:
+
+- `(Intercept)`: log mean total weight for Control, 2024, MQ.
+- `heat_groupD`, `heat_groupC`, `heat_groupB`, `heat_groupA`: log ratio of that
+  heat group to Control in 2024 (MQ); `exp(Estimate)` is the ratio.
+- `year2025`: log ratio 2025/2024 for Control, MQ.
+- `cultivarST`: log ratio ST/MQ for Control, 2024.
+- `heat_groupX:year2025`: extra log ratio in 2025, so the 2025 heat ratio is
+  `exp(heat_groupX + heat_groupX:year2025)`.
+- `year2025:cultivarST`: extra ST/MQ change in 2025.
+
+## Variance components
+
+```{r h2-variance}
+h2_vc <- as.data.frame(VarCorr(h2_final))
+sigma2_pair  <- h2_vc$vcov[h2_vc$grp == "pair"]
+sigma2_resid <- h2_vc$vcov[h2_vc$grp == "Residual"]
+
+h2_var_tab <- data.frame(
+  component = c("pair variance", "residual variance",
+                "pair SD", "residual SD", "ICC"),
+  value     = c(sigma2_pair,
+                sigma2_resid,
+                sqrt(sigma2_pair),
+                sqrt(sigma2_resid),
+                sigma2_pair / (sigma2_pair + sigma2_resid))
+)
+
+kable(h2_var_tab, digits = 4)
+```
+
+## Predicted total weight by heat group, year and cultivar
+
+```{r h2-predicted, fig.width=9, fig.height=6, fig.cap="Predicted total weight (g) by heat group, year and cultivar, with pointwise 95% confidence intervals from the H2 model."}
+pred_grid <- expand.grid(
+  heat_group = levels(d$heat_group),
+  year       = levels(d$year),
+  cultivar   = levels(d$cultivar),
+  stringsAsFactors = FALSE
+)
+pred_grid$heat_group <- factor(pred_grid$heat_group, levels = levels(d$heat_group))
+pred_grid$year       <- factor(pred_grid$year, levels = levels(d$year))
+pred_grid$cultivar   <- factor(pred_grid$cultivar, levels = levels(d$cultivar))
+
+pred_fit <- predict(h2_final, newdata = pred_grid, re.form = NA, se.fit = TRUE)
+pred_grid$fit   <- exp(pred_fit$fit)
+pred_grid$lower <- exp(pred_fit$fit - 1.96 * pred_fit$se.fit)
+pred_grid$upper <- exp(pred_fit$fit + 1.96 * pred_fit$se.fit)
+
+p_pred <- ggplot(pred_grid, aes(x = heat_group, y = fit, group = 1)) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.15, colour = "grey35") +
+  geom_line(colour = "steelblue", linewidth = 0.6) +
+  geom_point(size = 2.4, colour = "steelblue") +
+  facet_grid(cultivar ~ year) +
+  scale_x_discrete(labels = c(Control = "Control", D = "D (1)", C = "C (2)",
+                              B = "B (3)", A = "A (4)")) +
+  labs(
+    x = "Heat group",
+    y = "Predicted total weight (g)",
+    title = "Predicted total weight by heat group, year and cultivar",
+    subtitle = "H2 model; fixed-effect predictions with 95% confidence intervals",
+    caption = "Intervals are pointwise and back-transformed from the log scale."
+  ) +
+  theme_bw(base_size = 11)
+
+p_pred
+```
+

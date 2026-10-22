@@ -341,3 +341,6 @@ p_pred <- ggplot(pred_grid, aes(x = heat_group, y = fit, group = 1)) +
 p_pred
 ```
 
+Overall, heat stress reduces total fruit weight, but how much it reduces depended on the year and the number of pulses. Averaged over A–D, the reduction is about 11.5% (95% CI 6.6–16.2%, p < 0.001). In 2024 the reduction is smaller, about 7.8% (p = 0.038); after Holm adjustment, none of the individual heat levels is significantly different from Contro. In 2025 the reduction is larger, about 15.1% (p < 0.001), with A (4 pulses) down 36.9% and B (3 pulses) down 18.7%, while C and D are close to Control. Overall A has the largest effect about −25.9%.
+
+The figure shows a similar pattern: from Control to A, as the number of pulses goes from 0 to 4, total weight generally goes down. In 2024, MQ and ST has similar curves and differed mainly in level. in 2025, ST drops a lot while MQ only decreases a little. This suggests that the year effect matters more for ST, which may also mean that MQ is more stable. But the model did not find a heat*cultivar interaction (p = 0.28); MQ and ST differ mainly in baseline, and the 2025 ST baseline is much lower than in 2024. 

@@ -35,7 +35,7 @@ stress experiment) affect the various measures of yield?
 ## 2) Exploratory Data Analysis and Modifications
 
 ```{r}
-data_raw <- read.csv("acute_yield_data_fall_2026.csv")
+data_raw <- read.csv("https://raw.githubusercontent.com/wwy200311gy-sudo/stat628/refs/heads/main/acute_yield_data_fall_2026.csv")
 
 data <- data_raw %>%
                 mutate(
@@ -55,11 +55,11 @@ data <- data_raw %>%
                                 healthy_count_pct = 100 * healthy_n / (healthy_n + rotten_n),
                                 healthy_weight_prop = healthy_weight / total_weight,
                                 healthy_weight_pct  = 100 * healthy_weight_prop,
-                                pulses = as.numeric(c(A = 4, B = 3, C = 2, data = 1)[as.character(intensity_group)])
+                                pulses = as.numeric(c(A = 4, B = 3, C = 2, D = 1)[as.character(intensity_group)])
              )
 
 # Design checks -------------------------------------------------------------
-stopifnot(nrow(data) == 96, nlevels(data$pair) == 48)
+stopifnot(nrow(data) == 96, nlevels(data$pair_id) == 48)
 stopifnot(!anyNA(data$heat_group))
 stopifnot(all(data %>% count(pair_id) %>% pull(n) == 2))
 stopifnot(all(data %>%
@@ -146,7 +146,7 @@ cor_pair <- cor(wide$Control, wide$OTC)
 ggplot(wide, aes(x = Control, y = OTC, colour = heat_group)) +
   geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey40") +
   geom_point(size = 2, alpha = 0.85) +
-  scale_colour_manual(values = c(data = "#fee5d9", C = "#fcae91",
+  scale_colour_manual(values = c(D = "#fee5d9", C = "#fcae91",
                                  B = "#fb6a4a", A = "#cb181d")) +
   labs(x = "Control total weight (g)", y = "Heat total weight (g)",
        colour = "Heat group",
@@ -169,7 +169,7 @@ ggplot(summ_hy, aes(x = heat_group, y = mean, colour = year, group = year)) +
   geom_point(size = 2) +
   geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.12) +
   facet_wrap(~ cultivar) +
-  labs(x = "Heat group (data = 1, C = 2, B = 3, A = 4 pulses)",
+  labs(x = "Heat group (D = 1, C = 2, B = 3, A = 4 pulses)",
        y = "Mean total weight (g)", colour = "Year",
        title = "Heat group x year, separately by cultivar") +
   theme_bw(base_size = 11)
@@ -181,7 +181,7 @@ ggplot(summ_hy, aes(x = heat_group, y = mean, colour = cultivar, group = cultiva
   geom_point(size = 2) +
   geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = 0.12) +
   facet_wrap(~ year) +
-  labs(x = "Heat group (data = 1, C = 2, B = 3, A = 4 pulses)",
+  labs(x = "Heat group (D = 1, C = 2, B = 3, A = 4 pulses)",
        y = "Mean total weight (g)", colour = "Cultivar",
        title = "Heat group x cultivar, separately by year") +
   theme_bw(base_size = 11)
@@ -223,9 +223,14 @@ them with AIC and likelihood-ratio tests.
 
 ## 4) How does heat stress affect yield as measured by the total weight of fruit?
 
+### 4.1 Candidate models
+
+Total fruit weight is positive and right-skewed, so we model `log(total_weight)`.
+The candidate fixed-effect structures are:
+
 ```{r}
 fit_lmm <- function(form) lmer(form, data = data, REML = FALSE)
-# Total weight
+
 h0_total <- fit_lmm(log(total_weight) ~ heat_group + cultivar + year + year:cultivar + (1 | pair_id))
 
 h1_total <- fit_lmm(log(total_weight) ~ heat_group * cultivar + year + year:cultivar + (1 | pair_id))
@@ -235,41 +240,90 @@ h2_total <- fit_lmm(log(total_weight) ~ heat_group * year + cultivar + year:cult
 h3_total <- fit_lmm(log(total_weight) ~ heat_group * (cultivar + year) + year:cultivar + (1 | pair_id))
 
 h4_total <- fit_lmm(log(total_weight) ~ treatment * intensity_group + cultivar + year + year:cultivar + (1 | pair_id))
-
 ```
-
 
 ```{r}
-aic_tab <- bind_rows(
-  data.frame(Response = "Total",   Model = c("H0", "H1", "H2", "H3", "H4"),
-             df = sapply(list(h0_total, h1_total, h2_total, h3_total, h4_total),
-                         function(m) attr(logLik(m), "df")),
-             AIC = sapply(list(h0_total, h1_total, h2_total, h3_total, h4_total), AIC)),
+models_total <- list(
+  H0 = h0_total,
+  H1 = h1_total,
+  H2 = h2_total,
+  H3 = h3_total,
+  H4 = h4_total
+)
+
+aic_tab <- data.frame(
+  Model = names(models_total),
+  df    = sapply(models_total, function(m) attr(logLik(m), "df")),
+  AIC   = sapply(models_total, AIC)
 ) %>%
-  group_by(Response) %>%
-  mutate(dAIC = AIC - min(AIC)) %>%
-  ungroup()
-kable(aic_tab)
+  mutate(dAIC = AIC - min(AIC))
 
+kable(aic_tab, digits = 2, row.names = FALSE,
+      caption = "AIC comparison for total weight (ML fits).")
 ```
 
-We can choose h2_total, which has the smallest AIC.
+H2 has the smallest AIC, so we select H2. 
 
-We refit the selected H2 model with REML for the final estimates:
+### 4.2 Heteroscedastic residual variance
 
-```{r h2-formula}
-h2_final <- lmer(log(total_weight) ~ heat_group * year + cultivar + year:cultivar +
-                   (1 | pair_id), data = data, REML = TRUE)
+H2 assumes a common residual variance. Control and heat plots may differ in
+their residual spread, so we refit the same fixed and random effects with
+`nlme::lme` and allow a separate residual variance for Control and OTC:
 
-formula(h2_final)
+```{r}
+h2_lmm <- lmer(log(total_weight) ~ heat_group * year + cultivar + year:cultivar +
+                 (1 | pair_id), data = data, REML = TRUE)
+
+h2_hom <- lme(log(total_weight) ~ heat_group * year + cultivar + year:cultivar,
+              random = ~ 1 | pair_id, data = data, method = "REML")
+h2_het <- update(h2_hom, weights = varIdent(form = ~ 1 | treatment))
+
+anova(h2_hom, h2_het)
 ```
 
-$$
-\log Y_i=\mu+\alpha_{g_i}+\beta_{t_i}+(\alpha\beta)_{g_i t_i}
-+\gamma_{c_i}+(\beta\gamma)_{t_i c_i}+b_{k(i)}+\varepsilon_i,
-\qquad b_k\sim N(0,\sigma_b^2),\quad \varepsilon_i\sim N(0,\sigma^2),
-$$
+The likelihood-ratio test is significant, so the model with
+separate residual variances is preferred. We use `h2_het` for the final
+estimates.
 
+
+### 4.3 Coefficients of the final model
+
+```{r}
+coef_tab <- summary(h2_het)$tTable
+coef_ci  <- intervals(h2_het, which = "fixed")$fixed
+
+data.frame(
+  Term       = rownames(coef_tab),
+  Estimate   = coef_tab[, "Value"],
+  SE         = coef_tab[, "Std.Error"],
+  p_value    = format.pval(coef_tab[, "p-value"], digits = 3, eps = 1e-4),
+  Ratio      = exp(coef_tab[, "Value"]),
+  Lower_95   = exp(coef_ci[, "lower"]),
+  Upper_95   = exp(coef_ci[, "upper"]),
+  row.names  = NULL
+) %>%
+  kable(digits = 3,
+        caption = "Fixed-effect estimates of the final heteroscedastic H2 model.")
+```
+
+The reference levels are Control, 2024 and MQ. The `heat_group` coefficients
+are log ratios relative to Control in 2024 for MQ; the `:year2025` terms add
+the extra change in 2025; `cultivarST` is the ST/MQ baseline difference in
+2024; `year2025:cultivarST` is the extra 2025 change for ST.
+
+
+
+### 4.4 Answer
+
+Heat stress lowers total fruit weight, but how big the drop is depends
+on the year and on how many pulses the plants get. On average, the four heat
+levels are about 11.5% lower than Control. The drop is smaller in 2024 (about
+7.8%) and larger in 2025 (about 15.1%). In 2025, A is about 36.6% lower and B about 19.1% lower. Each pulse trend points are about −9% per pulse overall, but it is
+weak in 2024 (−3%, p = 0.36) and strong in 2025 (−15%, p < 0.0001). We do not
+see a heat × cultivar interaction for p=0.28; MQ and ST differ mostly in
+baseline, and the 2025 ST baseline is much lower. We also let Control and OTC
+have different residual variances; the LRT supports this, so we
+use that model for the final estimates.
 
 
 
@@ -368,7 +422,7 @@ ggplot(pred_df, aes(x = heat_group, y = prob)) +
 ```
 
 
-## 5) How does heat stress affect yield as measured by the percentage of healthy fruit by weight?
+## 6) How does heat stress affect yield as measured by the percentage of healthy fruit by weight?
 binomial model underpredict heritabiltiy
 
 ```{r}
@@ -583,8 +637,8 @@ ggplot(data, aes(
 plot_heat_effects <- function(
   model,
   term_pattern = "^heat_group",
-  group_map = c("A" = "4 Pulses (A)", "B" = "3 Pulses (B)", "C" = "2 Pulses (C)", "data" = "1 Pulse (data)"),
-  group_order = c("4 Pulses (A)", "3 Pulses (B)", "2 Pulses (C)", "1 Pulse (data)"),
+  group_map = c("A" = "4 Pulses (A)", "B" = "3 Pulses (B)", "C" = "2 Pulses (C)", "D" = "1 Pulse (D)"),
+  group_order = c("4 Pulses (A)", "3 Pulses (B)", "2 Pulses (C)", "1 Pulse (D)"),
   unit = "g",
   title = "Impact of Heat Stress Pulses on Yield",
   subtitle = "Change relative to Control baseline (0)",

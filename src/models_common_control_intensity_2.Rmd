@@ -69,9 +69,180 @@ stopifnot(all(data %>%
   pull(ok)))
 stopifnot(all(data$total_weight > 0), all(data$healthy_n + data$rotten_n > 0))
 
-```
 
-```{r}
+summary(d$healthy_weight)
+d %>% count(year, cultivar, heat_group)
+
+
+# Part 1: descriptive statistics
+
+# 1a. Mean, SD and n of healthy weight in every cultivar x year x heat group
+d %>%
+  group_by(year, cultivar, heat_group) %>%
+  summarise(n = n(),
+            mean = mean(healthy_weight),
+            sd   = sd(healthy_weight),
+            min  = min(healthy_weight),
+            max  = max(healthy_weight),
+            .groups = "drop") %>%
+  print(n = Inf)
+
+
+
+# 1b. Raw data: every plot as one point, mean +/- SE in red
+ggplot(d, aes(x = heat_group, y = healthy_weight)) +
+  geom_jitter(width = 0.12, alpha = 0.6, colour = "grey35") +
+  stat_summary(fun.data = mean_se, colour = "red", size = 0.5) +
+  facet_grid(cultivar ~ year) +
+  labs(x = "Heat group (Control, then D = 1 ... A = 4 pulses)",
+       y = "Healthy fruit weight (g)",
+       title = "Healthy fruit weight by heat group, cultivar and year",
+       subtitle = "Grey = individual plots; red = mean +/- SE") +
+  theme_bw(base_size = 11)
+
+# Part 2: within-pair log ratio OTC / Control
+# Keep only the columns that are identical within a pair, plus the ones to spread.
+# (Other columns such as rotten_n differ between the two rows and would prevent pivot_wider from merging the pair.)
+pairs_wide <- d %>%
+  select(pair, year, cultivar, intensity_group, pulses, treatment, healthy_weight) %>%
+  pivot_wider(names_from = treatment, values_from = healthy_weight) %>%
+  mutate(ratio = OTC / Control,
+         log_ratio = log(ratio))
+
+nrow(pairs_wide)
+
+# Summary: geometric mean ratio per cultivar-year-intensity
+pairs_wide %>%
+  group_by(year, cultivar, intensity_group) %>%
+  summarise(n = n(),
+            mean_log_ratio = mean(log_ratio),
+            geo_mean_ratio = exp(mean_log_ratio),
+            .groups = "drop") %>%
+  print(n = Inf)
+
+# Plot: each point is one pair; 0 on the log scale = no change
+ggplot(pairs_wide, aes(x = intensity_group, y = log_ratio)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_jitter(width = 0.1, alpha = 0.6, colour = "grey35") +
+  stat_summary(fun.data = mean_se, colour = "red", size = 0.5) +
+  facet_grid(cultivar ~ year) +
+  scale_y_continuous(sec.axis = sec_axis(~ exp(.), name = "Ratio OTC / Control")) +
+  labs(x = "Intensity group (D = 1 ... A = 4 pulses)",
+       y = "log(OTC / Control) within pair",
+       title = "Within-pair log ratio of healthy fruit weight",
+       subtitle = "Below the dashed line = OTC lower than its own Control") +
+  theme_bw(base_size = 11)
+
+
+
+
+# Part 3: log transform
+grp <- d %>%
+  group_by(year, cultivar, heat_group) %>%
+  summarise(mean_raw = mean(healthy_weight),
+            sd_raw   = sd(healthy_weight),
+            mean_log = mean(log(healthy_weight)),
+            sd_log   = sd(log(healthy_weight)),
+            .groups = "drop")
+
+# Put both scales in one long data frame (raw panel first, log panel second)
+grp_long <- bind_rows(
+  grp %>% transmute(scale = "Raw scale", year, cultivar, heat_group,
+                    m = mean_raw, s = sd_raw),
+  grp %>% transmute(scale = "Log scale", year, cultivar, heat_group,
+                    m = mean_log, s = sd_log)
+) %>%
+  mutate(scale = factor(scale, levels = c("Raw scale", "Log scale")))
+
+ggplot(grp_long, aes(x = m, y = s)) +
+  geom_point(aes(shape = cultivar,
+                 colour = ifelse(heat_group == "Control", "Control", "OTC")),
+             size = 2.3) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE,
+              colour = "grey50", linewidth = 0.6) +
+  facet_wrap(~ scale, scales = "free") +
+  scale_colour_manual(values = c(Control = "grey20", OTC = "tomato")) +
+  labs(x = "Group mean", y = "Group SD",
+       title = "Group SD versus group mean on the raw and log scale",
+       subtitle = "Each point is one cultivar x year x heat group (20 points)",
+       shape = "Cultivar", colour = "Treatment") +
+  theme_bw(base_size = 11)
+
+# Numerical version of the same question
+grp %>%
+  summarise(cor_raw = cor(mean_raw, sd_raw, method = "spearman"),
+            cor_log = cor(mean_log, sd_log, method = "spearman"))
+
+
+
+
+# Part 4: Correlation between the two plots of a pair
+
+# 4a. Overall correlation
+cor(log(pairs_wide$Control), log(pairs_wide$OTC))
+
+# 4b. Correlation within each cultivar x year
+pairs_wide %>%
+  group_by(year, cultivar) %>%
+  summarise(n = n(),
+            r_log = cor(log(Control), log(OTC)),
+            .groups = "drop")
+
+
+
+
+
+# Part 5: interaction plots on the log scale
+summ <- d %>%
+  mutate(log_w = log(healthy_weight)) %>%
+  group_by(year, cultivar, heat_group) %>%
+  summarise(mean_log = mean(log_w),
+            se = sd(log_w) / sqrt(n()),
+            .groups = "drop")
+
+# The y axis is on the log scale but labelled in grams
+brks  <- c(250, 400, 600, 800, 1000)
+scale_y_grams <- scale_y_continuous(breaks = log(brks), labels = brks)
+
+# A: heat group x year, separately by cultivar
+ggplot(summ, aes(x = heat_group, y = mean_log, colour = year, group = year)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.12) +
+  facet_wrap(~ cultivar) +
+  scale_y_grams +
+  labs(x = "Heat group (Control, then D = 1 ... A = 4 pulses)",
+       y = "Healthy weight (g), log scale",
+       title = "Mean healthy weight by heat group and year, separately for each cultivar",
+       colour = "Year") +
+  theme_bw(base_size = 11)
+
+# B: heat group x cultivar, separately by year
+ggplot(summ, aes(x = heat_group, y = mean_log, colour = cultivar, group = cultivar)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.12) +
+  facet_wrap(~ year) +
+  scale_y_grams +
+  labs(x = "Heat group (Control, then D = 1 ... A = 4 pulses)",
+       y = "Healthy weight (g), log scale",
+       title = "Mean healthy weight by heat group and cultivar, separately for each year",
+       colour = "Cultivar") +
+  theme_bw(base_size = 11)
+
+# C: year x cultivar baseline, Control plots only
+summ %>%
+  filter(heat_group == "Control") %>%
+  ggplot(aes(x = year, y = mean_log, colour = cultivar, group = cultivar)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.08) +
+  scale_y_grams +
+  labs(x = "Year", y = "Healthy weight (g), log scale",
+       title = "Mean healthy weight of Control plots by year and cultivar",
+       colour = "Cultivar") +
+  theme_bw(base_size = 11)
+
 plot(as.factor(data$heat_group), data$healthy_weight)
 
 ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
@@ -93,10 +264,7 @@ ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
   facet_wrap(~ year) + # Split into separate panels by year
   labs(x = "Heat Group", y = "Healthy Weight") +
   theme_classic()
-```
 
-
-```{r }
 data %>%
   transmute(`Total weight (g)` = total_weight,
             `log(total weight)` = log(total_weight)) %>%
@@ -262,7 +430,7 @@ kable(aic_tab, digits = 2, row.names = FALSE,
       caption = "AIC comparison for total weight (ML fits).")
 ```
 
-H2 has the smallest AIC, so we select H2. 
+H2 has the smallest AIC, so we select H2.
 
 ### 4.2 Heteroscedastic residual variance
 
@@ -325,9 +493,294 @@ baseline, and the 2025 ST baseline is much lower. We also let Control and OTC
 have different residual variances; the LRT supports this, so we
 use that model for the final estimates.
 
+# 5) How does heat stress affect yield as measured by the total weight of healthy fruit?
+
+```{r}
+# Part 6: model comparison
+fit_lmm <- function(form) lmer(form, data = d, REML = FALSE)
+
+# no heat effect at all (baseline: cultivar x year only)
+h_noheat <- fit_lmm(log(healthy_weight) ~ cultivar * year + (1 | pair))
+# heat effect is the same in every cultivar-year
+h0 <- fit_lmm(log(healthy_weight) ~ heat_group + cultivar + year + year:cultivar + (1 | pair))
+# heat effect depends on cultivar
+h1 <- fit_lmm(log(healthy_weight) ~ heat_group * cultivar + year + year:cultivar + (1 | pair))
+# heat effect depends on year
+h2 <- fit_lmm(log(healthy_weight) ~ heat_group * year + cultivar + year:cultivar + (1 | pair))
+# heat effect depends on cultivar and on year, but no three-way interaction
+h3 <- fit_lmm(log(healthy_weight) ~ heat_group * (cultivar + year) + year:cultivar + (1 | pair))
+# full model: heat effect can differ in every cultivar-year
+h_full <- fit_lmm(log(healthy_weight) ~ heat_group * cultivar * year + (1 | pair))
+
+models <- list(h_noheat = h_noheat, h0 = h0, h1 = h1, h2 = h2, h3 = h3, h_full = h_full)
+```
 
 
-## 5) How does heat stress affect yield as measured by the percentage of healthy berries by count?
+```{r}
+# AIC / BIC table
+aic_tab <- data.frame(
+  model = names(models),
+  df    = sapply(models, function(m) attr(logLik(m), "df")),
+  AIC   = sapply(models, AIC),
+  BIC   = sapply(models, BIC)
+) %>%
+  mutate(dAIC = AIC - min(AIC), dBIC = BIC - min(BIC))
+print(aic_tab, row.names = FALSE)
+```
+
+
+```{r}
+# Likelihood-ratio tests between nested models
+anova(h_noheat, h0)   # is there any heat effect?
+anova(h0, h1)         # does the heat effect depend on cultivar?
+anova(h0, h2)         # does the heat effect depend on year?
+anova(h1, h3)         # adding heat x year after heat x cultivar
+anova(h2, h3)         # adding heat x cultivar after heat x year
+anova(h3, h_full)     # three-way interaction
+
+sapply(models, isSingular)   # TRUE = pair variance estimated as ~0
+```
+
+
+
+```{r}
+# Part 7: Equal-variance model and diagnostics
+h2_lmm <- lmer(log(healthy_weight) ~ heat_group * year + cultivar + year:cultivar +
+                   (1 | pair), data = d, REML = TRUE)
+isSingular(h2_lmm)
+
+# Residual diagnostics for the equal-variance model
+par(mfrow = c(1, 3))
+
+# Residuals vs fitted values, coloured by treatment
+plot(fitted(h2_lmm), resid(h2_lmm),
+     col = ifelse(d$treatment == "OTC", "tomato", "grey30"), pch = 16,
+     xlab = "Fitted value (log scale)", ylab = "Residual",
+     main = "Residuals vs fitted")
+abline(h = 0, lty = 2)
+legend("topleft", legend = c("Control", "OTC"),
+       col = c("grey30", "tomato"), pch = 16, bty = "n")
+
+# Normal QQ plot of the residuals
+qqnorm(resid(h2_lmm), main = "Normal QQ: residuals", pch = 16, col = "grey30")
+qqline(resid(h2_lmm))
+
+# Normal QQ plot of the estimated pair effects
+re_pair <- ranef(h2_lmm)$pair[, 1]
+qqnorm(re_pair, main = "Normal QQ: pair effects", pch = 16, col = "grey30")
+qqline(re_pair)
+
+par(mfrow = c(1, 1))
+
+# Residual SD by treatment
+d %>%
+  mutate(r = resid(h2_lmm)) %>%
+  group_by(treatment) %>%
+  summarise(sd_resid = sd(r))
+
+```
+```{r}
+# Part 8: Model with separate residual variances for Control and OTC
+library(nlme)
+
+# Same fixed and random effects as h2_lmm, refitted with nlme
+h2_hom <- lme(log(healthy_weight) ~ heat_group * year + cultivar + year:cultivar,
+              random = ~ 1 | pair, data = d, method = "REML")
+
+# Control and OTC plots have separate residual variances
+h2_het <- update(h2_hom, weights = varIdent(form = ~ 1 | treatment))
+
+# Likelihood-ratio test for unequal residual variances
+anova(h2_hom, h2_het)
+
+# Estimated residual SD of Control, and ratio OTC SD / Control SD
+sigma(h2_het)
+coef(h2_het$modelStruct$varStruct, unconstrained = FALSE)
+```
+
+
+```{r}
+# Diagnostics of the unequal-variance model, using Pearson residuals
+r_pear <- resid(h2_het, type = "pearson")
+
+par(mfrow = c(1, 3))
+plot(fitted(h2_het), r_pear,
+     col = ifelse(d$treatment == "OTC", "tomato", "grey30"), pch = 16,
+     xlab = "Fitted value (log scale)", ylab = "Pearson residual",
+     main = "Residuals vs fitted")
+abline(h = 0, lty = 2)
+legend("topleft", legend = c("Control", "OTC"),
+       col = c("grey30", "tomato"), pch = 16, bty = "n")
+
+qqnorm(r_pear, main = "Normal QQ: residuals", pch = 16, col = "grey30")
+qqline(r_pear)
+
+re_pair <- ranef(h2_het)[, 1]
+qqnorm(re_pair, main = "Normal QQ: pair effects", pch = 16, col = "grey30")
+qqline(re_pair)
+par(mfrow = c(1, 1))
+
+# Pearson residual SD by treatment
+d %>%
+  mutate(r = r_pear) %>%
+  group_by(treatment) %>%
+  summarise(sd_resid = sd(r))
+```
+```{r}
+# Part 9: Final model
+h2_final <- h2_het
+```
+
+
+$$
+\log Y_i = \mu + \alpha_{g_i} + \beta_{t_i} + (\alpha\beta)_{g_i t_i}
++ \gamma_{c_i} + (\beta\gamma)_{t_i c_i} + b_{k(i)} + \varepsilon_i,
+$$
+$$
+b_k \sim N(0, \sigma_b^2), \qquad
+\varepsilon_i \sim N\!\left(0, \sigma^2_{\text{trt}(i)}\right), \quad
+\text{trt}(i) \in \{\text{Control}, \text{OTC}\},
+$$
+```{r}
+# Coefficients of the final model
+coef_tab <- summary(h2_final)$tTable
+coef_ci  <- intervals(h2_final, which = "fixed")$fixed
+
+data.frame(term     = rownames(coef_tab),
+           estimate = coef_tab[, "Value"],
+           SE       = coef_tab[, "Std.Error"],
+           df       = coef_tab[, "DF"],
+           p        = coef_tab[, "p-value"],
+           ratio    = exp(coef_tab[, "Value"]),
+           lower_95 = exp(coef_ci[, "lower"]),
+           upper_95 = exp(coef_ci[, "upper"]),
+           row.names = NULL) %>%
+  kable(digits = 3)
+```
+```{r}
+# Variance components of the final model
+vc <- VarCorr(h2_final)
+sd_pair <- as.numeric(vc["(Intercept)", "StdDev"])
+sd_ctrl <- sigma(h2_final)
+sd_otc  <- sd_ctrl * coef(h2_final$modelStruct$varStruct, unconstrained = FALSE)[1]
+
+# Correlation between the Control and OTC plot of the same pair
+icc <- sd_pair^2 / sqrt((sd_pair^2 + sd_ctrl^2) * (sd_pair^2 + sd_otc^2))
+
+data.frame(component = c("pair SD", "residual SD (Control)", "residual SD (OTC)",
+                         "within-pair correlation"),
+           value = c(sd_pair, sd_ctrl, sd_otc, icc))
+```
+
+
+```{r}
+# Part 10: Tests and contrasts
+joint_tests(h2_final)
+
+emm_h <- emmeans(h2_final, ~ heat_group | year)
+```
+
+```{r}
+# Each intensity vs Control within each year, Dunnett-adjusted, as ratios OTC / Control
+ct <- contrast(emm_h, "trt.vs.ctrl", ref = "Control")
+summary(ct, type = "response", infer = TRUE)
+```
+
+
+```{r}
+# Average OTC effect over the four intensities within each year
+ct_avg <- contrast(emm_h, list("OTC avg vs Control" = c(-1, 1/4, 1/4, 1/4, 1/4)))
+summary(ct_avg, type = "response", infer = TRUE)
+```
+
+
+```{r}
+# Dose response among the four OTC intensities within each year
+emm_otc <- emmeans(h2_final, ~ heat_group | year,
+                   at = list(heat_group = c("D", "C", "B", "A")))
+contrast(emm_otc, "poly")
+```
+
+
+```{r}
+# Multiplicative change in healthy weight per additional heat pulse
+slope <- contrast(emm_otc, list("per extra pulse" = c(-3, -1, 1, 3) / 10))
+summary(slope, type = "response", infer = TRUE)
+
+# Difference in the dose-response slope between years (exploratory)
+pairs(slope, by = NULL)
+```
+
+
+```{r}
+# Average OTC effect over both years
+emm_all <- emmeans(h2_final, ~ heat_group)
+summary(contrast(emm_all, list("OTC avg vs Control" = c(-1, 1/4, 1/4, 1/4, 1/4))),
+        type = "response", infer = TRUE)
+```
+
+
+
+```{r}
+# Part 11: model estimates
+emm_cell <- emmeans(h2_final, ~ heat_group | year * cultivar)
+est <- as.data.frame(summary(emm_cell, type = "response"))   # response, lower.CL, upper.CL in grams
+
+ggplot() +
+  geom_jitter(data = d, aes(x = heat_group, y = healthy_weight),
+              width = 0.12, colour = "grey60", alpha = 0.7, size = 1.6) +
+  geom_errorbar(data = est, aes(x = heat_group, ymin = lower.CL, ymax = upper.CL),
+                width = 0.15, colour = "grey35") +
+  geom_line(data = est, aes(x = heat_group, y = response, group = 1),
+            colour = "steelblue", linewidth = 0.6) +
+  geom_point(data = est, aes(x = heat_group, y = response),
+             colour = "steelblue", size = 2.4) +
+  facet_grid(cultivar ~ year) +
+  scale_x_discrete(labels = c(Control = "Control", D = "D (1)", C = "C (2)",
+                              B = "B (3)", A = "A (4)")) +
+  labs(x = "Heat group (number of pulses)",
+       y = "Healthy fruit weight (g)",
+       title = "Estimated healthy fruit weight by heat group, cultivar and year",
+       subtitle = "Blue = estimated means from the final model with 95% confidence intervals; grey = individual plots") +
+  theme_bw(base_size = 11)
+```
+
+
+
+
+```{r}
+# Part 12: Sensitivity to the most extreme plots
+# Pearson residuals put Control and OTC plots on the same scale
+d$r <- resid(h2_final, type = "pearson")
+d %>%
+  arrange(desc(abs(r))) %>%
+  select(pair, year, cultivar, heat_group, healthy_weight, r) %>%
+  head(6)
+
+# The whole pairs of the 3 largest residuals are removed and the model is refitted
+out_pairs <- d %>% arrange(desc(abs(r))) %>% slice(1:3) %>%
+  pull(pair) %>% as.character() %>% unique()
+d_sub <- d %>% filter(!pair %in% out_pairs) %>% droplevels()
+
+h2_sub <- update(h2_final, data = d_sub)
+
+emm_sub <- emmeans(h2_sub, ~ heat_group | year)
+summary(contrast(emm_sub, "trt.vs.ctrl", ref = "Control"), type = "response", infer = TRUE)
+summary(contrast(emm_sub, list("OTC avg vs Control" = c(-1, 1/4, 1/4, 1/4, 1/4))),
+        type = "response", infer = TRUE)
+
+emm_sub_otc <- emmeans(h2_sub, ~ heat_group | year,
+                       at = list(heat_group = c("D", "C", "B", "A")))
+summary(contrast(emm_sub_otc, list("per extra pulse" = c(-3, -1, 1, 3) / 10)),
+        type = "response", infer = TRUE)
+```
+
+
+
+
+
+
+## 6) How does heat stress affect yield as measured by the percentage of healthy berries by count?
 
 ```{r}
 m1 <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group + cultivar + factor(year) + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
@@ -422,7 +875,7 @@ ggplot(pred_df, aes(x = heat_group, y = prob)) +
 ```
 
 
-## 6) How does heat stress affect yield as measured by the percentage of healthy fruit by weight?
+## 7) How does heat stress affect yield as measured by the percentage of healthy fruit by weight?
 binomial model underpredict heritabiltiy
 
 ```{r}
@@ -725,3 +1178,8 @@ plot_heat_effects <- function(
 ```
 
 
+## 8) Conclusion 
+
+
+
+## 9) Reference 

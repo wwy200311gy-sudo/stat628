@@ -22,7 +22,6 @@ library(lme4)
 
 ## 1) Introduction
 
-
 # Things to consider :
 1. How does heat stress affect yield as measured by the total weight of fruit?
 2. How does heat stress affect yield as measured by the total weight of healthy fruit?
@@ -51,15 +50,26 @@ data <- data_raw %>%
                                         levels = c("Control", "D", "C", "B", "A")
                                 ),
                   pair_id = interaction(year, cultivar, intensity_group, plot, drop = TRUE),
+
                                 total_weight = healthy_weight + rotten_weight,
-                                healthy_count_pct = 100 * healthy_n / (healthy_n + rotten_n),
-                                healthy_weight_prop = healthy_weight / total_weight,
+
+                                healthy_count_pct = 100 * ( healthy_n / (healthy_n + rotten_n)),
+
+                                healthy_weight_prop = (healthy_weight / total_weight),
+
                                 healthy_weight_pct  = 100 * healthy_weight_prop,
                                 pulses = as.numeric(c(A = 4, B = 3, C = 2, D = 1)[as.character(intensity_group)])
              )
 
 # Design checks -------------------------------------------------------------
 stopifnot(nrow(data) == 96, nlevels(data$pair_id) == 48)
+
+                                pulses = as.numeric(c(A = 4, B = 3, C = 2, data = 1)[as.character(intensity_group)])
+             )
+
+
+# Design checks
+stopifnot(nrow(data) == 96, nlevels(data$pair) == 48)
 stopifnot(!anyNA(data$heat_group))
 stopifnot(all(data %>% count(pair_id) %>% pull(n) == 2))
 stopifnot(all(data %>%
@@ -244,17 +254,18 @@ summ %>%
   theme_bw(base_size = 11)
 
 plot(as.factor(data$heat_group), data$healthy_weight)
+```
 
+# Healthy Fruit Weight by Heat Treatment
+```{r}
 ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
-  geom_boxplot(outlier.shape = NA) +
-  geom_jitter(width = 0.15, alpha = 0.4, color = "black") +
-
-  # Creates a grid with Year in rows and Cultivar in columns
+  geom_boxplot(outlier.shape = NA, fill = "skyblue", alpha = 0.7) +
+  geom_jitter(width = 0.15, alpha = 0.5, size = 2) +
   facet_grid(year ~ cultivar) +
-
   labs(
+    title = "Healthy Fruit Weight by Heat Treatment",
     x = "Heat Group",
-    y = "Healthy Weight"
+    y = "Healthy Weight (g)"
   ) +
   theme_bw()
 
@@ -265,15 +276,56 @@ ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
   labs(x = "Heat Group", y = "Healthy Weight") +
   theme_classic()
 
+  theme_bw(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+# Healthy Fruit Proportion by Heat Treatment
+```{r}
+ggplot(data, aes(x = factor(heat_group), y = healthy_weight_prop,
+                 fill = factor(heat_group))) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(aes(color = factor(heat_group)),
+              width = 0.15, alpha = 0.5, size = 2) +
+  facet_grid(year ~ cultivar) +
+  labs(
+    title = "Healthy Fruit Weight Proportion by Heat Treatment",
+    x = "Heat Group",
+    y = "Healthy Weight Proportion"
+  ) +
+  scale_fill_manual(values = c("#66C2A5", "#FC8D62", "#8DA0CB",
+                               "#E78AC3", "red")) +
+  scale_color_manual(values = c("#238B70", "#D95F02", "#4C65A8",
+                                "#B64D91", "black")) +
+  theme_bw(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+
+```{r}
 data %>%
-  transmute(`Total weight (g)` = total_weight,
-            `log(total weight)` = log(total_weight)) %>%
+  transmute(
+    `Total weight (g)` = total_weight,
+    `log(total weight)` = log(total_weight)
+  ) %>%
   pivot_longer(everything(), names_to = "scale", values_to = "value") %>%
   ggplot(aes(x = value)) +
-  geom_histogram(bins = 20, fill = "grey70", colour = "white") +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 20, fill = "grey80", colour = "white") +
+  geom_density(color = "steelblue", linewidth = 1) +
   facet_wrap(~ scale, scales = "free") +
-  labs(x = NULL, y = "Count",
-       title = "Total weight on the raw and log scales") +
+  labs(
+    x = NULL, y = "Density",
+    title = "Total weight on the log transformed and raw data"
+  ) +
   theme_bw(base_size = 11)
 ```
 
@@ -782,20 +834,150 @@ summary(contrast(emm_sub_otc, list("per extra pulse" = c(-3, -1, 1, 3) / 10)),
 
 ## 6) How does heat stress affect yield as measured by the percentage of healthy berries by count?
 
+First, we investigate the distribution of the healthy berries by count (n_healthy) variable
 ```{r}
-m1 <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group + cultivar + factor(year) + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
+ggplot(data, aes(x = healthy_n)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, fill = "grey80", colour = "white") +
+  geom_density(color = "steelblue", linewidth = 1) +
+  labs(
+    title = "Distribution of Healthy Fruit Counts",
+    x = "Healthy Fruit Count",
+    y = "Density"
+  ) +
+  theme_bw(base_size = 11)
+```
+
+
+Let's look at interaction plot
+
+```{r}
+ggplot(data, aes(x = factor(heat_group), y = healthy_n,
+                 colour = cultivar, group = cultivar)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(fun = mean, geom = "point", size = 2.5) +
+  facet_wrap(~ year) +
+  labs(
+    title = "Interaction Between Heat Group and Cultivar",
+    x = "Heat Group",
+    y = "Healthy Fruit Count",
+    colour = "Cultivar"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
+
+- Note (Soren) : effect of heat group differ by culttivar
+- Slopes differ across groups showing a possible heat group x cultivar interaction
+- Patterns differ across - a possible heat group x culticar x year interaction
+
+# Model Generation
+```{r}
+
+m1 <- glmmTMB(healthy_n ~ heat_group + cultivar + factor(year) + (1 | pair_id), family = nbinom2, data = data)
+summary(m1)
+m2 <- glmmTMB(healthy_n ~ heat_group * cultivar * factor(year) + (1 | pair_id), family = nbinom2, data = data)
+summary(m2)
+
+anova(m1, m2)
+
+# lets test further to test which interactions matter
+m_add <- glmmTMB(healthy_n ~ heat_group + cultivar + factor(year) + (1 | pair_id), family = nbinom2, data = data)
+
+m_2way <- glmmTMB(healthy_n ~ (heat_group + cultivar + factor(year))^2 +(1 | pair_id), family = nbinom2, data = data)
+summary(m_2way)
+
+m_3way <- glmmTMB(healthy_n ~ heat_group * cultivar * factor(year) + (1 | pair_id), family = nbinom2, data = data)
+
+anova(m_add, m_2way, m_3way)
+
+#m1 <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group + cultivar + factor(year) + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
 #summary(m1)
-m2 <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group * cultivar + factor(year) + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
+#m2 <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group * cultivar + factor(year) + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
 #summary(m2)
-m3 <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group + cultivar * factor(year) + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
+#m3 <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group + cultivar * factor(year) + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
 #summary(m3)
 
-anova(m2, m1, m3)
+#anova(m2, m1, m3)
+```
+From the first anova, we show that there is strong evidence that the association between heat group and healthy fruit count depends on cultivar, year or their combination.
+But when we add a 2 way interaction model, we see that 2 way interaction model does way better.
+
+-- One important detail: because nbinom2 uses a log link, the coefficients are on the log expected-count scale. Exponentiating a coefficient gives a count ratio.
+
+
+heat_groupD, pvalue ( 0.0576 ), About 15.8% fewer healthy fruits than Control; borderline evidence
+
+percentages are calculated as (exp(beta) - 1 ) * 100
+
+What the model concludes :
+Healthy fruit counts differ across several heat groups relative to Control.
+The heat-group effects for C and B differ between cultivars.
+The A-versus-Control effect differs between years.
+The cultivar difference changes substantially between years.
+
+There is no statistically significant evidence that the full three-way interaction improves model fit (\(p=0.263\), from your earlier comparison).
+
+
+# TODO : look into this one more
+```{r}
+m_final_emmeans <- emmeans(m_2way, ~ heat_group | cultivar * year,
+        type = "response")
+
+#m_final_emmeans <- emmeans(m_2way, pairwise ~ heat_group | cultivar * year,
+#        type = "response",
+#        adjust = "tukey")
+
+plot(m_final_emmeans)
+
+contrast(
+  m_final_emmeans,
+  method = "trt.vs.ctrl",
+  ref = 1,
+  adjust = "dunnett",
+  type = "response"
+)
+
+res <- contrast(
+  m_final_emmeans,
+  method = "trt.vs.ctrl",
+  ref = "Control",
+  adjust = "dunnett"
+)
+
+# Convert ratios to percentage changes
+plot_data <- as.data.frame(summary(res, type = "response"))
+
+# Inspect column names first
+names(plot_data)
+
+plot_data$percent_change <- (plot_data$ratio - 1) * 100
+
+ggplot(plot_data, aes(
+  x = contrast,
+  y = percent_change
+)) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             color = "gray50") +
+  geom_point(size = 2.5) +
+  facet_grid(year ~ cultivar) +
+  labs(
+    title = "Change in Healthy Fruit Count Relative to Control",
+    x = "Heat treatment vs Control",
+    y = "Change in expected healthy fruit count (%)"
+  ) +
+  theme_minimal(base_size = 13)
+
 ```
 
-```{r}
-summary(m1)
-```
+How big is the difference between the controls and the heat treatments ?
+- contrast above shows it and there is a plot too ( TODO : look into the plot more)
+
+
+
 
 ```{r}
 # Fixed-effect estimates
@@ -1178,8 +1360,8 @@ plot_heat_effects <- function(
 ```
 
 
-## 8) Conclusion 
+## 8) Conclusion
 
 
 
-## 9) Reference 
+## 9) Reference

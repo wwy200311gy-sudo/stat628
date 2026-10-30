@@ -18,21 +18,30 @@ library(knitr)
 library(DHARMa)
 library(tidyr)
 library(lme4)
+library(corrplot)
 ```
 
 ## 1) Introduction
+Crop production and harvest is an area of study whose output affects every general population. This is becuase everyone, regardless of their different facets of life - need to consume food to survive. With the growing trend of global temperature, food production and harvest quantity may fluctuate. 
 
-# Things to consider :
-1. How does heat stress affect yield as measured by the total weight of fruit?
-2. How does heat stress affect yield as measured by the total weight of healthy fruit?
-3. How does heat stress affect yield as measured by the percentage of healthy berries by count?
-4. How does heat stress affect yield as measured by the percentage of healthy fruit by weight?
-5. How do the cultivars, years, and intensity of the heat shocks (in the case of the acute heat stress experiment) affect the various measures of yield?
+This study aims answer question about the effects of heat treatment to cranberries and result we observe in production of cranberries. 
+
+We aim of answer the following questions : 
+
+1. How does heat stress affect yield as measured by the total weight of fruit? \n 
+2. How does heat stress affect yield as measured by the total weight of healthy fruit? \n 
+3. How does heat stress affect yield as measured by the percentage of healthy berries by count? \n 
+4. How does heat stress affect yield as measured by the percentage of healthy fruit by weight? \n 
+5. How do the cultivars, years, and intensity of the heat shocks (in the case of the acute heat stress experiment) affect the various measures of yield? \n 
 
 
 ## 2) Exploratory Data Analysis and Modifications
 
-```{r}
+Let us visualize the data first
+
+TODO : may be a proportional plot than healthy weight for ST and MQ
+
+```{r, include=FALSE}
 data_raw <- read.csv("acute_yield_data_fall_2026.csv")
 
 data <- data_raw %>%
@@ -53,6 +62,12 @@ data <- data_raw %>%
                                 healthy_weight_pct  = 100 * healthy_weight_prop,
                                 pulses = as.numeric(c(A = 4, B = 3, C = 2, data = 1)[as.character(intensity_group)]))
 
+```
+
+
+
+```{r, incluse=FALSE, echo=FALSE}
+
 # Design checks
 stopifnot(nrow(data) == 96, nlevels(data$pair_id) == 48)
 stopifnot(!anyNA(data$heat_group))
@@ -64,36 +79,64 @@ stopifnot(all(data %>%
   pull(ok)))
 stopifnot(all(data$total_weight > 0), all(data$healthy_n + data$rotten_n > 0))
 
+```
 
-summary(data$healthy_weight)
-data %>% count(year, cultivar, heat_group)
+```{r, echo=FALSE}
+ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
+  geom_boxplot(outlier.shape = NA, fill = "skyblue", alpha = 0.7) +
+  geom_jitter(width = 0.15, alpha = 0.5, size = 2) +
+  facet_grid(year ~ cultivar) +
+  labs(
+    title = "Healthy Fruit Weight by Heat Treatment",
+    x = "Heat Group",
+    y = "Healthy Weight (g)"
+  ) +
+  theme_bw()
+```
+
+```{r}
+
+ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.15, alpha = 0.4, color = "black") +
+  facet_wrap(~ year) + # Split into separate panels by year
+  labs(x = "Heat Group", y = "Healthy Weight") +
+  theme_classic() +
+  theme_bw(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+```
 
 
-# Part 1: descriptive statistics
+Healthy Fruit Proportion by Heat Treatment
+```{r, echo=FALSE} 
+ggplot(data, aes(x = factor(heat_group), y = healthy_weight_prop,
+                 fill = factor(heat_group))) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(aes(color = factor(heat_group)),
+              width = 0.15, alpha = 0.5, size = 2) +
+  facet_grid(year ~ cultivar) +
+  labs(
+    title = "Healthy Fruit Weight Proportion by Heat Treatment",
+    x = "Heat Group",
+    y = "Healthy Weight Proportion"
+  ) +
+  scale_fill_manual(values = c("#66C2A5", "#FC8D62", "#8DA0CB",
+                               "#E78AC3", "red")) +
+  scale_color_manual(values = c("#238B70", "#D95F02", "#4C65A8",
+                                "#B64D91", "black")) +
+  theme_bw(base_size = 10) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank()
+  )
+```
 
-# 1a. Mean, SD and n of healthy weight in every cultivar x year x heat group
-data %>%
-  group_by(year, cultivar, heat_group) %>%
-  summarise(n = n(),
-            mean = mean(healthy_weight),
-            sd   = sd(healthy_weight),
-            min  = min(healthy_weight),
-            max  = max(healthy_weight),
-            .groups = "drop") %>%
-  print(n = Inf)
 
-
-
-# 1b. Raw data: every plot as one point, mean +/- SE in red
-ggplot(data, aes(x = heat_group, y = healthy_weight)) +
-  geom_jitter(width = 0.12, alpha = 0.6, colour = "grey35") +
-  stat_summary(fun.data = mean_se, colour = "red", size = 0.5) +
-  facet_grid(cultivar ~ year) +
-  labs(x = "Heat group (Control, then data = 1 ... A = 4 pulses)",
-       y = "Healthy fruit weight (g)",
-       title = "Healthy fruit weight by heat group, cultivar and year",
-       subtitle = "Grey = individual plots; red = mean +/- SE") +
-  theme_bw(base_size = 11)
+```{r, include=FALSE}
 
 # Part 2: within-pair_id log ratio OTC / Control
 # Keep only the columns that are identical within a pair_id, plus the ones to spread.
@@ -104,7 +147,7 @@ pairs_wide <- data %>%
   mutate(ratio = OTC / Control,
          log_ratio = log(ratio))
 
-nrow(pairs_wide)
+#nrow(pairs_wide)
 
 # Summary: geometric mean ratio per cultivar-year-intensity
 pairs_wide %>%
@@ -112,9 +155,13 @@ pairs_wide %>%
   summarise(n = n(),
             mean_log_ratio = mean(log_ratio),
             geo_mean_ratio = exp(mean_log_ratio),
-            .groups = "drop") %>%
-  print(n = Inf)
+            .groups = "drop")
+#  %>%
+  #print(n = Inf)
 
+```
+
+```{r, echo=FALSE}
 # Plot: each point is one pair_id; 0 on the log scale = no change
 ggplot(pairs_wide, aes(x = intensity_group, y = log_ratio)) +
   geom_hline(yintercept = 0, linetype = 2) +
@@ -128,7 +175,82 @@ ggplot(pairs_wide, aes(x = intensity_group, y = log_ratio)) +
        subtitle = "Below the dashed line = OTC lower than its own Control") +
   theme_bw(base_size = 11)
 
+```
 
+
+We can observe from this plot that in majority of the cases, the production of heat treated group is in general lower than the log transformed control cases. 
+
+```{r, include=FALSE}
+
+#summary(data$healthy_weight)
+#data %>% count(year, cultivar, heat_group)
+```
+
+
+
+With the said data visualizations, we can observe how correlated the characteristics of the study are. 
+
+```{r, echo=FALSE}
+numeric_data <- data[, sapply(data, is.numeric)]
+
+# Calculate correlation matrix
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+
+# Display results
+#print(cor_matrix)
+
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  order = "hclust",
+  addCoef.col = "black",
+  tl.col = "black",
+  tl.srt = 45,
+  diag = FALSE
+)
+
+```
+From the plot above, we see Healthy Weight on the vertical line and then Heat Group on the horizontal. We can observe that control plots in both Steves and MQ yeild a higher healthy weight of cranberries in general. Higher the number, more correlated each of the characteristics are and vice versa. From the plot, we can observe that number of rotten creanberries percentage of healthy count is negatively correlated. Number of rotten variables is also negatively correlated with proportion of healthy weight and percentage of healthy weight. This means that as the number of rotten cranberries increase in number, one can observe decrease in the number of healthy cranberries. 
+
+```{r, include = FALSE}
+# Part 1: descriptive statistics
+
+# 1a. Mean, SD and n of healthy weight in every cultivar x year x heat group
+data %>%
+  group_by(year, cultivar, heat_group) %>%
+  summarise(n = n(),
+            mean = mean(healthy_weight),
+            sd   = sd(healthy_weight),
+            min  = min(healthy_weight),
+            max  = max(healthy_weight),
+            .groups = "drop") %>%
+  print(n = Inf)
+```
+
+```{r, include=FALSE}
+
+# 1b. Raw data: every plot as one point, mean +/- SE in red
+ggplot(data, aes(x = heat_group, y = healthy_weight)) +
+  geom_jitter(width = 0.12, alpha = 0.6, colour = "grey35") +
+  stat_summary(fun.data = mean_se, colour = "red", size = 0.5) +
+  facet_grid(cultivar ~ year) +
+  labs(x = "Heat group (Control, then data = 1 ... A = 4 pulses)",
+       y = "Healthy fruit weight (g)",
+       title = "Healthy fruit weight by heat group, cultivar and year",
+       subtitle = "Grey = individual plots; red = mean +/- SE") +
+  theme_bw(base_size = 11)
+
+```
+
+```{r, include=FALSE}
+
+
+```
+
+
+
+```{r, echo=FALSE}
 
 
 # Part 3: log transform
@@ -164,13 +286,17 @@ ggplot(grp_long, aes(x = m, y = s)) +
   theme_bw(base_size = 11)
 
 # Numerical version of the same question
-grp %>%
-  summarise(cor_raw = cor(mean_raw, sd_raw, method = "spearman"),
-            cor_log = cor(mean_log, sd_log, method = "spearman"))
+
+#grp %>%
+#  summarise(cor_raw = cor(mean_raw, sd_raw, method = "spearman"),
+#            cor_log = cor(mean_log, sd_log, method = "spearman"))
+
+```
+
+The relationship between group means and standard deviations was examined on both the original and logarithmic scales to assess potential mean-dependent variability. On the original scale, a positive association was observed between group means and standard deviations, suggesting that variability increased with average healthy fruit weight. Following logarithmic transformation, this relationship became substantially weaker, indicating that the transformation may improve variance stability. Therefore, a log transformation was considered as a potential approach for addressing heteroscedasticity in subsequent statistical modeling.
 
 
-
-
+```{r, include=FALSE}
 # Part 4: Correlation between the two plots of a pair_id
 
 # 4a. Overall correlation
@@ -182,9 +308,6 @@ pairs_wide %>%
   summarise(n = n(),
             r_log = cor(log(Control), log(OTC)),
             .groups = "drop")
-
-
-
 
 
 # Part 5: interaction plots on the log scale
@@ -199,103 +322,12 @@ summ <- data %>%
 brks  <- c(250, 400, 600, 800, 1000)
 scale_y_grams <- scale_y_continuous(breaks = log(brks), labels = brks)
 
-# A: heat group x year, separately by cultivar
-ggplot(summ, aes(x = heat_group, y = mean_log, colour = year, group = year)) +
-  geom_line() +
-  geom_point(size = 2) +
-  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.12) +
-  facet_wrap(~ cultivar) +
-  scale_y_grams +
-  labs(x = "Heat group (Control, then data = 1 ... A = 4 pulses)",
-       y = "Healthy weight (g), log scale",
-       title = "Mean healthy weight by heat group and year, separately for each cultivar",
-       colour = "Year") +
-  theme_bw(base_size = 11)
-
-# B: heat group x cultivar, separately by year
-ggplot(summ, aes(x = heat_group, y = mean_log, colour = cultivar, group = cultivar)) +
-  geom_line() +
-  geom_point(size = 2) +
-  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.12) +
-  facet_wrap(~ year) +
-  scale_y_grams +
-  labs(x = "Heat group (Control, then data = 1 ... A = 4 pulses)",
-       y = "Healthy weight (g), log scale",
-       title = "Mean healthy weight by heat group and cultivar, separately for each year",
-       colour = "Cultivar") +
-  theme_bw(base_size = 11)
-
-# C: year x cultivar baseline, Control plots only
-summ %>%
-  filter(heat_group == "Control") %>%
-  ggplot(aes(x = year, y = mean_log, colour = cultivar, group = cultivar)) +
-  geom_line() +
-  geom_point(size = 2) +
-  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.08) +
-  scale_y_grams +
-  labs(x = "Year", y = "Healthy weight (g), log scale",
-       title = "Mean healthy weight of Control plots by year and cultivar",
-       colour = "Cultivar") +
-  theme_bw(base_size = 11)
-
-plot(as.factor(data$heat_group), data$healthy_weight)
-```
-
-# Healthy Fruit Weight by Heat Treatment
-```{r}
-ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
-  geom_boxplot(outlier.shape = NA, fill = "skyblue", alpha = 0.7) +
-  geom_jitter(width = 0.15, alpha = 0.5, size = 2) +
-  facet_grid(year ~ cultivar) +
-  labs(
-    title = "Healthy Fruit Weight by Heat Treatment",
-    x = "Heat Group",
-    y = "Healthy Weight (g)"
-  ) +
-  theme_bw()
-
-ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
-  geom_boxplot(outlier.shape = NA) +
-  geom_jitter(width = 0.15, alpha = 0.4, color = "black") +
-  facet_wrap(~ year) + # Split into separate panels by year
-  labs(x = "Heat Group", y = "Healthy Weight") +
-  theme_classic()
-
-  theme_bw(base_size = 10) +
-  theme(
-    plot.title = element_text(face = "bold", hjust = 0.5),
-    panel.grid.minor = element_blank()
-  )
 ```
 
 
-# Healthy Fruit Proportion by Heat Treatment
-```{r}
-ggplot(data, aes(x = factor(heat_group), y = healthy_weight_prop,
-                 fill = factor(heat_group))) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
-  geom_jitter(aes(color = factor(heat_group)),
-              width = 0.15, alpha = 0.5, size = 2) +
-  facet_grid(year ~ cultivar) +
-  labs(
-    title = "Healthy Fruit Weight Proportion by Heat Treatment",
-    x = "Heat Group",
-    y = "Healthy Weight Proportion"
-  ) +
-  scale_fill_manual(values = c("#66C2A5", "#FC8D62", "#8DA0CB",
-                               "#E78AC3", "red")) +
-  scale_color_manual(values = c("#238B70", "#D95F02", "#4C65A8",
-                                "#B64D91", "black")) +
-  theme_bw(base_size = 10) +
-  theme(
-    plot.title = element_text(face = "bold", hjust = 0.5),
-    panel.grid.minor = element_blank()
-  )
-```
+Testing the density distribution of Total Weight 
 
-
-
-```{r}
+```{r, echo=FALSE}
 data %>%
   transmute(
     `Total weight (g)` = total_weight,
@@ -314,7 +346,10 @@ data %>%
   theme_bw(base_size = 11)
 ```
 
-```{r design-residuals, fig.width=9, fig.height=4.5, fig.cap="Absolute residuals vs fitted values from a Gaussian model. The raw scale shows a mild increase in spread with the fitted value; the log scale is flatter. This supports modelling log(total weight)."}
+Log transformations fix right-skewness—they cannot fix bimodality
+
+
+```{r design-residuals, fig.width=9, fig.height=4.5, fig.cap="Absolute residuals vs fitted values from a Gaussian model. The raw scale shows a mild increase in spread with the fitted value; the log scale is flatter. This supports modelling log(total weight).", echo=FALSE}
 m_raw <- lm(total_weight ~ heat_group * year + cultivar, data = data)
 m_log <- lm(log(total_weight) ~ heat_group * year + cultivar, data = data)
 
@@ -331,38 +366,130 @@ bind_rows(
   labs(x = "Fitted value", y = "|Residual|",
        title = "Absolute residuals vs fitted values: raw vs log scale") +
   theme_bw(base_size = 11)
+
+#####################################################################
+#####################################################################
+
+
+m_raw <- lm(total_weight ~ heat_group + year + cultivar, data = data)
+m_log <- lm(log(total_weight) ~ heat_group + year + cultivar, data = data)
+bind_rows(
+  data.frame(fitted = fitted(m_raw), abs_resid = abs(resid(m_raw)),
+             scale = "Raw scale"),
+  data.frame(fitted = fitted(m_log), abs_resid = abs(resid(m_log)),
+             scale = "Log scale")
+) %>%
+  ggplot(aes(x = fitted, y = abs_resid)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE, colour = "tomato") +
+  facet_wrap(~ scale, scales = "free") +
+  labs(x = "Fitted value", y = "|Residual|",
+       title = "Absolute residuals vs fitted values: raw vs log scale") +
+  theme_bw(base_size = 11)
+
 ```
 
-## pair_id structure
+While log transformation was unable to address the bimodial nature of total weight distribution, it looks like it stabalizes variance. 
 
-```{r design-pairs, fig.width=6.5, fig.height=5, fig.cap="Control and heat total weights within the same pair_id are strongly correlated (r = 0.84). This supports the pair_id random intercept (1 | pair_id)."}
-pair_heat <- data %>%
-  filter(treatment == "OTC") %>%
-  select(pair_id, heat_group)
 
-wide <- data %>%
-  select(pair_id, treatment, total_weight) %>%
-  pivot_wider(names_from = treatment, values_from = total_weight,
-              id_cols = pair_id) %>%
-  left_join(pair_heat, by = "pair_id")
+## 3) Interations
 
-cor_pair <- cor(wide$Control, wide$OTC)
 
-ggplot(wide, aes(x = Control, y = OTC, colour = heat_group)) +
-  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey40") +
-  geom_point(size = 2, alpha = 0.85) +
-  scale_colour_manual(values = c(data = "#fee5d9", C = "#fcae91",
-                                 B = "#fb6a4a", A = "#cb181d")) +
-  labs(x = "Control total weight (g)", y = "Heat total weight (g)",
-       colour = "Heat group",
-       title = sprintf("Within-pair_id correlation: r = %.2f", cor_pair)) +
+
+```{r, echo=FALSE}
+
+#summ <- data %>%
+#  group_by(year, cultivar, heat_group) %>%
+#  summarise(mean_healthy_weight = mean(healthy_weight),
+#            se = sd(healthy_weight) / sqrt(n()),
+#           .groups = "drop")
+
+# A: heat group x year, separately by cultivar
+ggplot(summ, aes(x = heat_group, y = mean_log, colour = year, group = year)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.12) +
+  facet_wrap(~ cultivar) +
+  scale_y_grams +
+  labs(x = "Heat group (Control, then data = 1 ... A = 4 pulses)",
+       y = "Healthy weight (g), log scale",
+       title = "Mean healthy weight by heat group and year, separately for each cultivar",
+       colour = "Year") +
+  theme_bw(base_size = 11)
+
+#ggplot(summ, aes(x = heat_group, y = mean_healthy_weight, colour = year, group = year)) +
+#  geom_line() +
+#  geom_point(size = 2) +
+#  geom_errorbar(aes(ymin = mean_healthy_weight - se, ymax = mean_healthy_weight + se), width = 0.12) +
+#  facet_wrap(~ cultivar) +
+#  scale_y_grams +
+#  labs(x = "Heat group (Control, then data = 1 ... A = 4 pulses)",
+#       y = "Healthy weight (g), log scale",
+#       title = "Mean healthy weight by heat group and year, separately for each cultivar",
+#       colour = "Year") +
+#  theme_bw(base_size = 11)
+
+```
+
+From the above interaction plots, we can wee that both red and blue lines - which signifies the log-mean of healthy weights for various heat treated groups. We see that in both plots, in all 4 graph lines, there is a downward trajectory as there is an increment in heat pulses. Cultivar ST demonstrates significant year-to-year variation, with 2025 producing dramatically lower healthy weights across all heat levels compared to 2024. 
+
+A key potential statistical interaction in this dataset is a Cultivar × Year interaction.
+
+```{r, echo=FALSE}
+
+# B: heat group x cultivar, separately by year
+ggplot(summ, aes(x = heat_group, y = mean_log, colour = cultivar, group = cultivar)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.12) +
+  facet_wrap(~ year) +
+  scale_y_grams +
+  labs(x = "Heat group (Control, then data = 1 ... A = 4 pulses)",
+       y = "Healthy weight (g), log scale",
+       title = "Mean healthy weight by heat group and cultivar, separately for each year",
+       colour = "Cultivar") +
   theme_bw(base_size = 11)
 ```
 
+There may be a potential heat group and year interaction. 
 
-## 3) Interaction
+```{r, include = FALSE}
 
-```{r design-heat-year, fig.width=9, fig.height=4.5, fig.cap="Mean total weight by heat group and year, separately for each cultivar. The 2024 and 2025 profiles differ: 2025 is lower overall, and MQ declines sharply at B/A in 2025 while ST is flatter. This supports a heat_group x year interaction."}
+# C: year x cultivar baseline, Control plots only
+summ %>%
+  filter(heat_group == "Control") %>%
+  ggplot(aes(x = year, y = mean_log, colour = cultivar, group = cultivar)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_log - se, ymax = mean_log + se), width = 0.08) +
+  scale_y_grams +
+  labs(x = "Year", y = "Healthy weight (g), log scale",
+       title = "Mean healthy weight of Control plots by year and cultivar",
+       colour = "Cultivar") +
+  theme_bw(base_size = 11)
+
+plot(as.factor(data$heat_group), data$healthy_weight)
+```
+
+Healthy Fruit Weight by Heat Treatment
+```{r, include =FALSE}
+ggplot(data, aes(x = factor(heat_group), y = healthy_weight)) +
+  geom_boxplot(outlier.shape = NA, fill = "skyblue", alpha = 0.7) +
+  geom_jitter(width = 0.15, alpha = 0.5, size = 2) +
+  facet_grid(year ~ cultivar) +
+  labs(
+    title = "Healthy Fruit Weight by Heat Treatment",
+    x = "Heat Group",
+    y = "Healthy Weight (g)"
+  ) +
+  theme_bw()
+```
+
+
+
+
+
+```{r design-heat-year, fig.width=9, fig.height=4.5, fig.cap="Mean total weight by heat group and year, separately for each cultivar. The 2024 and 2025 profiles differ: 2025 is lower overall, and MQ declines sharply at B/A in 2025 while ST is flatter. This supports a heat_group x year interaction.", echo=FALSE}
 summ_hy <- data %>%
   group_by(heat_group, year, cultivar) %>%
   summarise(mean = mean(total_weight),
@@ -380,7 +507,7 @@ ggplot(summ_hy, aes(x = heat_group, y = mean, colour = year, group = year)) +
   theme_bw(base_size = 11)
 ```
 
-```{r design-heat-cultivar, fig.width=9, fig.height=4.5, fig.cap="Mean total weight by heat group and cultivar, separately by year. MQ and ST differ mainly in level; their heat profiles are similar enough that a heat_group x cultivar interaction is not obviously required, but it is tested in H1."}
+```{r design-heat-cultivar, fig.width=9, fig.height=4.5, fig.cap="Mean total weight by heat group and cultivar, separately by year. MQ and ST differ mainly in level; their heat profiles are similar enough that a heat_group x cultivar interaction is not obviously required, but it is tested in H1.", echo=FALSE}
 ggplot(summ_hy, aes(x = heat_group, y = mean, colour = cultivar, group = cultivar)) +
   geom_line() +
   geom_point(size = 2) +
@@ -392,7 +519,7 @@ ggplot(summ_hy, aes(x = heat_group, y = mean, colour = cultivar, group = cultiva
   theme_bw(base_size = 11)
 ```
 
-```{r design-year-cultivar, fig.width=6.5, fig.height=4.5, fig.cap="Mean total weight by year and cultivar. The large 2025 ST drop supports a year x cultivar baseline term."}
+```{r design-year-cultivar, fig.width=6.5, fig.height=4.5, fig.cap="Mean total weight by year and cultivar. The large 2025 ST drop supports a year x cultivar baseline term.", echo=FALSE}
 summ_yc <- data %>%
   group_by(year, cultivar) %>%
   summarise(mean = mean(total_weight),
@@ -425,6 +552,38 @@ The figures support the following model structure:
 
 The model-building section below fits the candidate models H0–H4 and compares
 them with AIC and likelihood-ratio tests.
+
+pair_id structure
+
+```{r design-pairs, fig.width=6.5, fig.height=5, fig.cap="Control and heat total weights within the same pair_id are strongly correlated (r = 0.84). This supports the pair_id random intercept (1 | pair_id).", echo=FALSE}
+pair_heat <- data %>%
+  filter(treatment == "OTC") %>%
+  select(pair_id, heat_group)
+
+wide <- data %>%
+  select(pair_id, treatment, total_weight) %>%
+  pivot_wider(names_from = treatment, values_from = total_weight,
+              id_cols = pair_id) %>%
+  left_join(pair_heat, by = "pair_id")
+
+cor_pair <- cor(wide$Control, wide$OTC)
+
+ggplot(wide, aes(x = Control, y = OTC, colour = heat_group)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey40") +
+  geom_point(size = 2, alpha = 0.85) +
+  scale_colour_manual(values = c(data = "#fee5d9", C = "#fcae91",
+                                 B = "#fb6a4a", A = "#cb181d")) +
+  labs(x = "Control total weight (g)", y = "Heat total weight (g)",
+       colour = "Heat group",
+       title = sprintf("Within-pair_id correlation: r = %.2f", cor_pair)) +
+  theme_bw(base_size = 11)
+```
+
+Because r=0.84 represents a strong positive correlation, plants in the same pair tend to naturally start or grow at similar sizes (likely due to shared microclimate, soil, or location).
+Model Justification: This high correlation proves that observations within a pair are not independent.
+Mixed Model Syntax: It validates using a mixed-effects model with a random intercept for pairs - lmer(total_weight ~ heat_group + (1 | pair_id))—to control for pair-level baseline differences and avoid artificially inflated sample sizes/p-values.
+
+
 
 ## 4) How does heat stress affect yield as measured by the total weight of fruit?
 
@@ -478,6 +637,8 @@ their residual spread, so we refit the same fixed and random effects with
 ```{r}
 h2_lmm <- lmer(log(total_weight) ~ heat_group * year + cultivar + year:cultivar +
                  (1 | pair_id), data = data, REML = TRUE)
+
+
 
 h2_hom <- lme(log(total_weight) ~ heat_group * year + cultivar + year:cultivar,
               random = ~ 1 | pair_id, data = data, method = "REML")
@@ -564,7 +725,7 @@ aic_tab <- data.frame(
   mutate(dAIC = AIC - min(AIC), dBIC = BIC - min(BIC))
 print(aic_tab, row.names = FALSE)
 ```
-
+Comment : <TODO> - 
 
 ```{r}
 # Likelihood-ratio tests between nested models
@@ -578,7 +739,7 @@ anova(h3, h_full)     # three-way interaction
 sapply(models, isSingular)   # TRUE = pair_id variance estimated as ~0
 ```
 
-
+<TODO> : h2
 
 ```{r}
 # Part 7: Equal-variance model and diagnostics
@@ -734,7 +895,7 @@ summary(ct_avg, type = "response", infer = TRUE)
 ```{r}
 # Dose response among the four OTC intensities within each year
 emm_otc <- emmeans(h2_final, ~ heat_group | year,
-                   at = list(heat_group = c("data", "C", "B", "A")))
+                   at = list(heat_group = c("D", "C", "B", "A")))
 contrast(emm_otc, "poly")
 ```
 
@@ -807,7 +968,7 @@ summary(contrast(emm_sub, list("OTC avg vs Control" = c(-1, 1/4, 1/4, 1/4, 1/4))
         type = "response", infer = TRUE)
 
 emm_sub_otc <- emmeans(h2_sub, ~ heat_group | year,
-                       at = list(heat_group = c("data", "C", "B", "A")))
+                       at = list(heat_group = c("D", "C", "B", "A")))
 summary(contrast(emm_sub_otc, list("per extra pulse" = c(-3, -1, 1, 3) / 10)),
         type = "response", infer = TRUE)
 ```
@@ -909,8 +1070,8 @@ There is no statistically significant evidence that the full three-way interacti
 
 # TODO : look into this one more
 ```{r}
-m_final_emmeans <- emmeans(m_2way, ~ heat_group | cultivar * year,
-        type = "response")
+
+m_final_emmeans <- emmeans(m_2way, ~ heat_group | cultivar * year, type = "response") # look into the model and then modify - heat_group | cultivar * year, 
 
 #m_final_emmeans <- emmeans(m_2way, pairwise ~ heat_group | cultivar * year,
 #        type = "response",
@@ -1011,32 +1172,32 @@ kable(
 ```
 
 ```{r}
-healthy_predictions <- emmeans( m1, ~ heat_group, type = "response" )
+#healthy_predictions <- emmeans( model_, ~ heat_group, type = "response" )
 
 #healthy_predictions
-plot(healthy_predictions)
-pairs(healthy_predictions)
+#plot(healthy_predictions)
+#pairs(healthy_predictions)
 ```
 
 ```{r}
-pred_df <- as.data.frame(healthy_predictions)
+#pred_df <- as.data.frame(healthy_predictions)
 
-ggplot(pred_df, aes(x = heat_group, y = prob)) +
-  geom_point(size = 3) +
-  geom_errorbar(
-    aes(ymin = asymp.LCL, ymax = asymp.UCL),
-    width = 0.15
-  ) +
-  scale_y_continuous(
-    labels = scales::percent,
-    limits = c(0, 1)
-  ) +
-  labs(
-    x = "Heat treatment",
-    y = "Predicted healthy berries (%)",
-    title = "Effect of heat stress on healthy berry percentage"
-  ) +
-  theme_minimal()
+#ggplot(pred_df, aes(x = heat_group, y = prob)) +
+#  geom_point(size = 3) +
+#  geom_errorbar(
+#    aes(ymin = asymp.LCL, ymax = asymp.UCL),
+#    width = 0.15
+#  ) +
+#  scale_y_continuous(
+#    labels = scales::percent,
+#    limits = c(0, 1)
+#  ) +
+#  labs(
+#    x = "Heat treatment",
+#    y = "Predicted healthy berries (%)",
+#    title = "Effect of heat stress on healthy berry percentage"
+#  ) +
+#  theme_minimal()
 
 ## Q : how big of a diff bet control and avg of the 4 heat intensity
 ```

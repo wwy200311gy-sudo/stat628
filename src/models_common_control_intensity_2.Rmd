@@ -1551,11 +1551,137 @@ ggplot(data, aes(
   theme_minimal() +
   theme(legend.position = "none")
 ```
-3. How does heat stress affect yield as measured by the percentage of healthy berries by count?
+
+5. How do the cultivars, years, and intensity of the heat shocks (in the case of the acute heat stress experiment) affect the various measures of yield? \n 
+
+Identified measures of yield 
+- rotten_n 
+- rotten_weight 
+- healthy_n 
+- healthy_weight 
+- total_weight 
+- healthy_countr_percentage 
+- rotten_count_percentage 
 
 ```{r}
+library(glmmTMB)
+library(emmeans)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# -------------------------------------------------------------------------
+# 1. Data Preparation & Variable Calculation
+# -------------------------------------------------------------------------
+# Set factors and order intensity levels (Control -> D -> C -> B -> A)
+data <- data %>%
+  mutate(
+    year            = factor(year),
+    cultivar        = factor(cultivar),
+    plot            = factor(plot),
+    intensity_group = factor(intensity_group, levels = c("Control", "D", "C", "B", "A")),
+    
+    # Derived yield measures calculated directly from raw data
+    total_weight             = healthy_weight + rotten_weight,
+    total_n                  = healthy_n + rotten_n,
+    healthy_count_percentage = (healthy_n / total_n) * 100,
+    rotten_count_percentage  = (rotten_n / total_n) * 100
+  )
+
+# -------------------------------------------------------------------------
+# 2. Fit Models for All 7 Yield Measures
+# -------------------------------------------------------------------------
+
+# --- Healthy Metrics ---
+# 1. Healthy Count (Negative Binomial)
+m_healthy_n   <- glmmTMB(healthy_n ~ intensity_group + cultivar + year + (1 | plot), 
+                         family = nbinom2, data = data)
+
+# 2. Healthy Weight (Gamma log-link)
+m_healthy_wt  <- glmmTMB(healthy_weight ~ intensity_group + cultivar + year + (1 | plot), 
+                         family = Gamma(link = "log"), data = data)
+
+# 3. Healthy Count Percentage (Binomial model using count success/failure)
+m_healthy_pct <- glmmTMB(cbind(healthy_n, rotten_n) ~ intensity_group + cultivar + year + (1 | plot), 
+                         family = binomial, data = data)
+
+
+# --- Rotten Metrics ---
+# 4. Rotten Count (Negative Binomial)
+m_rotten_n    <- glmmTMB(rotten_n ~ intensity_group + cultivar + year + (1 | plot), 
+                         family = nbinom2, data = data)
+
+# 5. Rotten Weight (Gamma log-link; use ziGamma or tweedie if zero-inflated)
+m_rotten_wt   <- glmmTMB(rotten_weight ~ intensity_group + cultivar + year + (1 | plot), 
+                         family = Gamma(link = "log"), data = data)
+
+# 6. Rotten Count Percentage (Binomial model using count success/failure)
+m_rotten_pct  <- glmmTMB(cbind(rotten_n, healthy_n) ~ intensity_group + cultivar + year + (1 | plot), 
+                         family = binomial, data = data)
+
+
+# --- Total Metric ---
+# 7. Total Weight (Gaussian)
+m_total_wt    <- glmmTMB(total_weight ~ intensity_group + cultivar + year + (1 | plot), 
+                         family = gaussian(), data = data)
+
+# -------------------------------------------------------------------------
+# 3. Extract Estimated Marginal Means Across Intensity Groups
+# -------------------------------------------------------------------------
+emm_h_n   <- emmeans(m_healthy_n,   ~ intensity_group, type = "response")
+plot(emm_h_n)
+emm_h_wt  <- emmeans(m_healthy_wt,  ~ intensity_group, type = "response")
+
+emm_h_pct <- emmeans(m_healthy_pct, ~ intensity_group, type = "response")
+
+emm_r_n   <- emmeans(m_rotten_n,    ~ intensity_group, type = "response")
+emm_r_wt  <- emmeans(m_rotten_wt,   ~ intensity_group, type = "response")
+emm_r_pct <- emmeans(m_rotten_pct,  ~ intensity_group, type = "response")
+
+emm_t_wt  <- emmeans(m_total_wt,    ~ intensity_group, type = "response")
+
+# -------------------------------------------------------------------------
+# 4. Plotting Function & Visualization
+# -------------------------------------------------------------------------
+plot_intensity <- function(emm_obj, title_str, y_lab_str, color_hex) {
+  df <- as.data.frame(emm_obj)
+  
+  # Dynamically detect main response column name
+  y_col <- intersect(names(df), c("response", "emmean", "prob", "rate"))[1]
+  
+  # Dynamically detect Lower and Upper Confidence Limit column names
+  l_col <- intersect(names(df), c("asymp.LCL", "lower.CL", "LCL"))[1]
+  u_col <- intersect(names(df), c("asymp.UCL", "upper.CL", "UCL"))[1]
+  
+  ggplot(df, aes(x = intensity_group, y = .data[[y_col]], group = 1)) +
+    geom_line(color = color_hex, linewidth = 0.9) +
+    geom_point(color = color_hex, size = 3) +
+    geom_errorbar(aes(ymin = .data[[l_col]], ymax = .data[[u_col]]), 
+                  width = 0.15, color = color_hex) +
+    labs(title = title_str, x = "Heat Intensity Group", y = y_lab_str) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title = element_text(face = "bold", size = 11))
+}
+
+# 1. Generate updated plots with the robust plotting function
+p1 <- plot_intensity(emm_h_n,   "Healthy Count", "Count", "#1b9e77")
+p2 <- plot_intensity(emm_h_wt,  "Healthy Weight", "Weight", "#1b9e77")
+p3 <- plot_intensity(emm_h_pct, "Healthy %", "Probability", "#1b9e77")
+
+p4 <- plot_intensity(emm_r_n,   "Rotten Count", "Count", "#d95f02")
+p5 <- plot_intensity(emm_r_wt,  "Rotten Weight", "Weight", "#d95f02")
+p6 <- plot_intensity(emm_r_pct, "Rotten %", "Probability", "#d95f02")
+
+p7 <- plot_intensity(emm_t_wt,  "Total Weight", "Weight", "#7570b3")
+
+# 2. Display patchworks layout
+(p1 | p2 | p3) / 
+(p4 | p5 | p6) / 
+(p7 | plot_spacer() | plot_spacer())
 
 ```
+
 
 
 

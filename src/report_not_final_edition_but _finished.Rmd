@@ -1405,9 +1405,9 @@ data.frame(Model       = 1:6,
 
 ### B.3 Residual variance and model checks
 
-**Unequal variances in heated and Control plots.** When the selected model was fitted with the same residual variance for all plots, the residuals of heated plots were clearly more spread out than those of Control plots (Figure 12). Ignoring this would understate the uncertainty of comparisons involving heated plots, so we refitted the model with separate residual variances for heated and Control plots, which fitted much better (likelihood-ratio test, p `r hw_p(hw_var_lrt$"p-value"[2])`); the estimated residual standard deviation of heated plots was about `r round(sd_otc / sd_ctrl, 1)` times that of Control plots. With this change, the residuals had a similar spread in both groups and both the residuals and the estimated pair effects were close to normally distributed (Figure 13), apart from two heated plots with unusually low healthy weight, which we examine in Appendix B.5.
+**Unequal variances in heated and Control plots.** When the selected model was fitted with the same residual variance for all plots, the residuals of heated plots were clearly more spread out than those of Control plots (Figure 12). Ignoring this would understate the uncertainty of comparisons involving heated plots, so we refitted the model with separate residual variances for heated and Control plots, which fitted much better (likelihood-ratio test, p `r hw_p(hw_var_lrt$"p-value"[2])`). The estimated residual standard deviation of heated plots was about `r round(sd_otc / sd_ctrl, 1)` times that of Control plots. With this change, the residuals had a similar spread in both groups and both the residuals and the estimated pair effects were close to normally distributed (Figure 13), apart from two heated plots with unusually low healthy weight, which we examine in Appendix B.5.
 
-```{r hw-resid-lmm, fig.pos="H",fig.width=8,fig.height=4.5,out.width="95%", fig.cap="Residuals against fitted values from the selected model fitted with a single residual variance for all plots. Each point is one plot; black points are Control plots and red points are heated plots. The dashed line marks zero. The residuals of heated plots are clearly more spread out than those of Control plots."}
+```{r hw-resid-lmm, fig.pos="H",fig.width=8,fig.height=4.5,out.width="95%", fig.cap="Residuals against fitted values from the selected model fitted with a single residual variance for all plots. Each point is one plot. Black points are Control plots and red points are heated plots. The dashed line marks zero. The residuals of heated plots are clearly more spread out than those of Control plots."}
 data %>%
   mutate(fitted = fitted(hw_lmm),
          resid  = resid(hw_lmm)) %>%
@@ -1421,7 +1421,7 @@ data %>%
   theme_bw(base_size = 11)
 ```
 
-```{r hw-diag-final,fig.pos="H",fig.width=8,fig.height=4.5,out.width="95%", fig.width=9, fig.height=3.5, fig.cap="Diagnostic plots for the final model, which allows separate residual variances for heated and Control plots. Left: standardised (Pearson) residuals against fitted values; black points are Control plots and red points are heated plots, and the dashed line marks zero. Middle: normal quantile plot of the standardised residuals. Right: normal quantile plot of the estimated pair effects. Points close to the red lines indicate approximately normal distributions."}
+```{r hw-diag-final,fig.pos="H",fig.width=8,fig.height=4.5,out.width="95%", fig.width=9, fig.height=3.5, fig.cap="Diagnostic plots for the final model, which allows separate residual variances for heated and Control plots. Left: standardised (Pearson) residuals against fitted values. Black points are Control plots and red points are heated plots, and the dashed line marks zero. Middle: normal quantile plot of the standardised residuals. Right: normal quantile plot of the estimated pair effects. Points close to the red lines indicate approximately normal distributions."}
 library(patchwork)
 
 hw_diag_df <- data %>%
@@ -1485,7 +1485,7 @@ data.frame(Term     = hw_term_labels[rownames(hw_coef_tab)],
   kable(digits = c(0, 3, 3, 2, 0, 0),
         col.names = c("Term", "Estimate (log scale)", "Standard error",
                       "Ratio", "95% CI for ratio", "p-value"),
-        caption = "Estimated fixed effects of the final model. Estimates are on the natural log scale; Ratio is the exponential of the estimate, i.e. the multiplicative change in healthy weight. The reference levels are Control, 2024 and Mullica Queen. For the intercept, the exponential is the estimated healthy weight in grams of Control plots of Mullica Queen in 2024. The heat group terms compare each heat group with Control in 2024; the terms marked × 2025 give the additional multiplicative change in 2025. The p-values are not adjusted for multiple comparisons.")
+        caption = "Estimated fixed effects of the final model. Estimates are on the natural log scale. Ratio is the exponential of the estimate, i.e. the multiplicative change in healthy weight. The reference levels are Control, 2024 and Mullica Queen. For the intercept, the exponential is the estimated healthy weight in grams of Control plots of Mullica Queen in 2024. The heat group terms compare each heat group with Control in 2024, the terms marked × 2025 give the additional multiplicative change in 2025.")
 ```
 
 ### B.5 Sensitivity analysis

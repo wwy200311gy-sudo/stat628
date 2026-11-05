@@ -1378,28 +1378,29 @@ where $Y_i$ is the healthy fruit weight in grams, $\log$ is the natural logarith
 **Choosing the model.** We compared six candidate models that differed only in how the heat effect was allowed to vary between cultivars and years (Table 8), using likelihood-ratio tests and the Akaike and Bayesian information criteria (AIC and BIC). There was strong evidence that heat affected healthy weight (p `r hw_p(hw_lrt_p["heat"])`). Allowing the heat effect to differ between years improved the fit (p `r hw_p(hw_lrt_p["year"])`), whereas allowing it to differ between cultivars did not (p `r hw_p(hw_lrt_p["cult"])`). We therefore selected the model with a year-specific heat effect, which also had the lowest AIC; BIC, which penalises additional parameters more heavily, preferred the simpler model with a common heat effect.
 
 ```{r hw-model-table}
-hw_model_desc <- c("No heat effect",
-                   "Same heat effect in all cultivars and years",
-                   "Heat effect differs between cultivars",
-                   "Heat effect differs between years (selected)",
-                   "Heat effect differs between cultivars and between years",
-                   "Heat effect differs in every cultivar-year combination")
-hw_model_cmp <- c("", "vs. model 1", "vs. model 2", "vs. model 2", "vs. model 4", "vs. model 5")
+hw_model_desc <- c("None",
+                   "Same in all cultivars and years",
+                   "Differs between cultivars",
+                   "Differs between years (selected)",
+                   "Differs between cultivars and between years",
+                   "Differs in every cultivar-year combination")
+hw_model_cmp <- c("", "Model 1", "Model 2", "Model 2", "Model 4", "Model 5")
 hw_model_p   <- c(NA, hw_lrt_p[c("heat", "cult", "year", "cult_after_year", "three")])
 
 data.frame(Model       = 1:6,
            Description = hw_model_desc,
            Parameters  = hw_aic_tab$df,
-           AIC         = hw_aic_tab$AIC,
-           BIC         = hw_aic_tab$BIC,
+           AIC         = sprintf("%.1f", hw_aic_tab$AIC),
+           BIC         = sprintf("%.1f", hw_aic_tab$BIC),
            Test        = hw_model_cmp,
            p           = ifelse(is.na(hw_model_p), "",
                                 ifelse(hw_model_p < 0.001, "< 0.001",
                                        sprintf("%.3f", hw_model_p)))) %>%
-  kable(digits = 1, row.names = FALSE,
+  kable(format = "latex", booktabs = TRUE, position = "H", row.names = FALSE,
+        align = c("c", "l", "c", "r", "r", "l", "r"),
         col.names = c("Model", "Heat effect", "Parameters", "AIC", "BIC",
-                      "Likelihood-ratio test", "p-value"),
-        caption = "Candidate models for the natural logarithm of healthy fruit weight. All models include cultivar, year, the cultivar-by-year interaction and a random effect for each pair, and were fitted by maximum likelihood with a single residual variance. Parameters counts all estimated quantities, including the variances. Lower AIC and BIC indicate a better balance between fit and model size. The p-value is from a likelihood-ratio test of the model against the model named in the previous column.")
+                      "Compared with", "p-value"),
+        caption = "Candidate models for the natural logarithm of healthy fruit weight. All models include cultivar, year, the cultivar-by-year interaction and a random effect for each pair, and were fitted by maximum likelihood with a single residual variance. Parameters counts all estimated quantities, including the variances. Lower AIC and BIC indicate a better balance between fit and model size. The p-value is from a likelihood-ratio test against the model in the Compared with column.")
 ```
 
 ### B.3 Residual variance and model checks
@@ -1584,3 +1585,4 @@ hp_p_year   <- hp_year_lrt$`Pr(>Chisq)`[2]
 The beta-binomial model on the counts of healthy and rotten berries is an alternative way to describe the same composition, but it models a share of berries by number, not a share of weight, so its likelihood is not comparable with the beta model. The beta model on the proportion is used for the results in Section 6.
 
 Year contributes little to the share by weight. Dropping it changes the fit by p = `r fmt_p(hp_p_year)`, so the year term is kept only so that this model has the same fixed-effect structure as the other yield models and the measures stay comparable.
+

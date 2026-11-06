@@ -333,8 +333,7 @@ ggplot() +
              colour = "steelblue", size = 2.4) +
   facet_grid(cultivar ~ year, labeller = labeller(cultivar = eda_cultivar_labels)) +
   scale_x_discrete(labels = eda_group_labels) +
-  labs(x = "Heat group", y = "Total fruit weight (g)",
-       title = "Simulate total fruit weight by heat group, cultivar and year") +
+  labs(x = "Heat group", y = "Total fruit weight (g)") +
   theme_bw(base_size = 11)
 ```
 
@@ -1034,12 +1033,15 @@ results_prop <- coef_table_prop %>%
     `Odds Ratio (95% CI)` = sprintf("%.3f [%.3f, %.3f]", Odds_Ratio, CI_Lower, CI_Upper),
     # Format Percentage Change with CI
     `Percent Change (95% CI)` = sprintf("%+.1f%% [%+.1f%%, %+.1f%%]", Percent_Change, PC_Lower, PC_Upper),
-    Significance = case_when(
+        Significance = case_when(
       `Pr(>|z|)` < 0.001 ~ "***",
       `Pr(>|z|)` < 0.01  ~ "**",
       `Pr(>|z|)` < 0.05  ~ "*",
       TRUE ~ "Not Significant"
-    )
+    ),
+    Term = c(heat_groupD = "1 pulse", heat_groupC = "2 pulses",
+             heat_groupB = "3 pulses", heat_groupA = "4 pulses",
+             cultivarST = "Stevens", year2025 = "Year 2025")[Term]
   ) %>%
   select(
     Term,
@@ -1677,7 +1679,7 @@ p_resid + p_qq_resid + p_qq_pair
 
 ```{r hw-coef-table}
 hw_term_labels <- c(
-  "(Intercept)"          = "Intercept (Control, 2024, Mullica Queen)",
+  "(Intercept)"          = "Intercept",
   "heat_groupD"          = "1 pulse",
   "heat_groupC"          = "2 pulses",
   "heat_groupB"          = "3 pulses",
@@ -1692,17 +1694,16 @@ hw_term_labels <- c(
 )
 
 data.frame(Term     = hw_term_labels[rownames(hw_coef_tab)],
-           Estimate = hw_coef_tab[, "Value"],
-           SE       = hw_coef_tab[, "Std.Error"],
-           Ratio    = exp(hw_coef_tab[, "Value"]),
+           Estimate = sprintf("%.3f", hw_coef_tab[, "Value"]),
+           SE       = sprintf("%.3f", hw_coef_tab[, "Std.Error"]),
+           Ratio    = sprintf("%.2f", exp(hw_coef_tab[, "Value"])),
            CI       = sprintf("%.2f to %.2f",
                               exp(hw_coef_ci[, "lower"]), exp(hw_coef_ci[, "upper"])),
-           p        = ifelse(hw_coef_tab[, "p-value"] < 0.001, "< 0.001",
-                             sprintf("%.3f", hw_coef_tab[, "p-value"])),
+           p        = fmt_p(hw_coef_tab[, "p-value"]),
            row.names = NULL) %>%
-  kable(digits = c(0, 3, 3, 2, 0, 0),
-        col.names = c("Term", "Estimate (log scale)", "Standard error",
-                      "Ratio", "95% CI for ratio", "p-value"),
+  kable(format = "latex", booktabs = TRUE, position = "H", row.names = FALSE,
+        align = c("l", "r", "r", "r", "l", "r"),
+        col.names = c("Term", "Estimate", "SE", "Ratio", "95% CI for ratio", "p-value"),
         caption = "Estimated fixed effects of the final model for healthy fruit weight. Estimates are on the natural log scale, and Ratio is their exponential, which gives the multiplicative change in healthy weight. The reference levels are Control, 2024 and Mullica Queen. The terms marked × 2025 give the additional change in 2025.")
 ```
 

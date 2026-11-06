@@ -2,10 +2,10 @@
 title: 'Cranberry Models: Common Control'
 author: "Soren Basnet, Qingquan Liu, Wuyang Wang"
 output:
-  html_document:
-    df_print: paged
   pdf_document:
     latex_engine: xelatex
+  html_document:
+    df_print: paged
 header-includes:
 - \usepackage{float}
 - \setlength{\LTcapwidth}{\textwidth}
@@ -319,7 +319,7 @@ ggplot() +
   facet_grid(cultivar ~ year, labeller = labeller(cultivar = eda_cultivar_labels)) +
   scale_x_discrete(labels = eda_group_labels) +
   labs(x = "Heat group", y = "Total fruit weight (g)",
-       title = "Estimated total fruit weight by heat group, cultivar and year") +
+       title = "Simulate total fruit weight by heat group, cultivar and year") +
   theme_bw(base_size = 11)
 ```
 
@@ -940,11 +940,18 @@ Heat changes both how many berries a plot produces and what share of them is hea
 
 ### 5.1 Final model
 
-Final model for to evaluate the effect on percentage of healthy berries by count is as follow : 
+The final model used to evaluate the effect of heat exposure on the percentage of healthy berries by count is specified as follows:
 
-$$\text{logit}\left(P(Y_{ij} = \text{healthy})\right) = \beta_0 + \sum_{k=1}^{4} \beta_k \cdot \text{HeatGroup}_{ijk} + \gamma \cdot \text{Cultivar}_{ij} + \delta \cdot \text{Year}_{ij} + u_i$$
+$$
+\operatorname{logit}\left(P(Y_{ij} = \mathrm{healthy})\right)
+= \beta_0
++ \sum_{k=1}^{4}\beta_k \mathrm{HeatGroup}_{ijk}
++ \gamma \mathrm{Cultivar}_{ij}
++ \delta \mathrm{Year}_{ij}
++ u_i
+$$
 
-where: \n <br>
+where:  <br>
 * $P(Y_{ij} = \text{healthy})$ represents the probability that a berry in plot $j$ of pair $i$ is healthy. <br>
 * $\beta_0$ is the intercept representing the reference baseline (Mullica Queen, unheated control, 2024). <br>
 * $\text{HeatGroup}_{ijk}$ represents the dummy variables for heat pulse intensity treatments ($D = 1$ pulse, $C = 2$ pulses, $B = 3$ pulses, $A = 4$ pulses relative to plot with no treatment (Control)).<br>
@@ -1047,9 +1054,9 @@ kable(
 ```
 
 The fixed-effects results from the beta-binomial mixed-effects model indicate that under baseline conditions (Mullica Queen cultivar, unheated control plots, 2024), berries had a high baseline probability of remaining healthy, with an intercept odds ratio of 20.16 (p<0.001). All acute heat stress treatments (Groups D through A) dramatically and significantly reduced the odds of fruit health (p<0.001), yielding odds ratios ranging from 
-0.238 to 0.284, which demonstrates that heat shock severely damages fruit quality regardless of pulse accumulation. When comparing cultivars, the Stevens (ST) variety did not exhibit a statistically significant difference in healthy berry proportion relative to the Mullica Queen (MQ) baseline (OR=1.19, p=0.181). \n 
+0.238 to 0.284, which demonstrates that heat shock severely damages fruit quality regardless of pulse accumulation. When comparing cultivars, the Stevens (ST) variety did not exhibit a statistically significant difference in healthy berry proportion relative to the Mullica Queen (MQ) baseline (OR=1.19, p=0.181). 
 
-However, a significant year effect was detected (OR=0.77, p=0.038), reflecting lower baseline fruit health in 2025 compared to 2024 even after controlling for heat treatments and cultivar differences. \n
+However, a significant year effect was detected (OR=0.77, p=0.038), reflecting lower baseline fruit health in 2025 compared to 2024 even after controlling for heat treatments and cultivar differences. 
 
 ### 5.3 Answer
 
@@ -1137,7 +1144,7 @@ plot_prop <- ggplot(
   ) +
   scale_color_brewer(palette = "Set1") +
   labs(
-    title = "Model-Predicted Healthy Cranberry Percentage",
+    title = "Model-Simulated Healthy Cranberry Percentage",
     x = "Heat Treatment",
     y = "Healthy Berries (%)"
   ) +
@@ -1444,7 +1451,7 @@ The selected model assumes one residual variance. Control and heated plots may
 differ in spread, so the same fixed and random effects were refitted in nlme with
 a separate residual variance for each group:
 
-```{r a-tw-var, include=FALSE}
+```{r a-tw-var}
 tw_hom <- lme(log(total_weight) ~ heat_group * year + cultivar + year:cultivar,
               random = ~ 1 | pair_id, data = data, method = "REML")
 tw_het <- update(tw_hom, weights = varIdent(form = ~ 1 | treatment))
@@ -1770,9 +1777,9 @@ kable(
 ```
 
 The fixed-effects results from the beta-binomial mixed-effects model indicate that under baseline conditions (Mullica Queen cultivar, unheated control plots, 2024), berries had a high baseline probability of remaining healthy, with an intercept odds ratio of 20.16 (p<0.001). All acute heat stress treatments (Groups D through A) dramatically and significantly reduced the odds of fruit health (p<0.001), yielding odds ratios ranging from 
-0.238 to 0.284, which demonstrates that heat shock severely damages fruit quality regardless of pulse accumulation. When comparing cultivars, the Stevens (ST) variety did not exhibit a statistically significant difference in healthy berry proportion relative to the Mullica Queen (MQ) baseline (OR=1.19, p=0.181). \n 
+0.238 to 0.284, which demonstrates that heat shock severely damages fruit quality regardless of pulse accumulation. When comparing cultivars, the Stevens (ST) variety did not exhibit a statistically significant difference in healthy berry proportion relative to the Mullica Queen (MQ) baseline (OR=1.19, p=0.181). 
 
-However, a significant year effect was detected (OR=0.77, p=0.038), reflecting lower baseline fruit health in 2025 compared to 2024 even after controlling for heat treatments and cultivar differences. \n
+However, a significant year effect was detected (OR=0.77, p=0.038), reflecting lower baseline fruit health in 2025 compared to 2024 even after controlling for heat treatments and cultivar differences. 
 
 #### C.3 Answer
 

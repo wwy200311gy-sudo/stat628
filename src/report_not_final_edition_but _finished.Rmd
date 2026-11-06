@@ -889,106 +889,221 @@ Heat stress reduced the total weight of healthy fruit by about `r hw_pct(hw_over
 
 ## 5) How does heat stress affect yield as measured by the percentage of healthy berries by count?
 
-Heat changes both how many berries a plot carries and what share of them is healthy. This section looks at counts. The response is `healthy_n`, the number of healthy berries on a plot, which is a count, so the model is a negative-binomial GLMM with a log link, a random intercept for each pair, and all two-way interactions between heat group, cultivar and year.
+Heat changes both how many berries a plot produces and what share of them is healthy. While we have investigated the impact of heat stress on total weight and total healthy weight on sections before, percentage of healthy berries by count will now be investigated. The response is `healthy_n`, the number of healthy berries on a plot, which is a count, so the model is a beta-binomial GLMM with a log link, a random intercept for each pair. 
 
 ### 5.1 Final model
 
-```{r hc-fit, include=FALSE}
-hc_add  <- glmmTMB(healthy_n ~ heat_group + cultivar + year + (1 | pair_id),
-                   family = nbinom2, data = data)
-hc_2way <- glmmTMB(healthy_n ~ (heat_group + cultivar + year)^2 + (1 | pair_id),
-                   family = nbinom2, data = data)
-hc_3way <- glmmTMB(healthy_n ~ heat_group * cultivar * year + (1 | pair_id),
-                   family = nbinom2, data = data)
-hc_final <- hc_2way
+Final model for to evaluate the effect on percentage of healthy berries by count is as follow : 
 
-hc_models <- list("Main effects" = hc_add,
-                  "All two-way interactions" = hc_2way,
-                  "All three-way interactions" = hc_3way)
+$$\text{logit}\left(P(Y_{ij} = \text{healthy})\right) = \beta_0 + \sum_{k=1}^{4} \beta_k \cdot \text{HeatGroup}_{ijk} + \gamma \cdot \text{Cultivar}_{ij} + \delta \cdot \text{Year}_{ij} + u_i$$
 
-hc_lrt <- anova(hc_add, hc_2way, hc_3way)
-hc_p_two_way   <- hc_lrt$`Pr(>Chisq)`[2]
-hc_p_three_way <- hc_lrt$`Pr(>Chisq)`[3]
+where: \n <br>
+* $P(Y_{ij} = \text{healthy})$ represents the probability that a berry in plot $j$ of pair $i$ is healthy. <br>
+* $\beta_0$ is the intercept representing the reference baseline (Mullica Queen, unheated control, 2024). <br>
+* $\text{HeatGroup}_{ijk}$ represents the dummy variables for heat pulse intensity treatments ($D = 1$ pulse, $C = 2$ pulses, $B = 3$ pulses, $A = 4$ pulses relative to plot with no treatment (Control)).<br>
+* $\text{Cultivar}_{ij}$ is the indicator for the Stevens (ST) cultivar relative to Mullica Queen (MQ).<br>
+* $\text{Year}_{ij}$ accounts for the temporal indicator for the 2025 season relative to 2024.<br>
+* $u_i \sim N(0, \sigma^2_u)$ represents the random intercept for the matched plot pair $i$ (`pair_id`).<br>
 
-hc_jt <- as.data.frame(joint_tests(hc_final))
-hc_p_heat    <- hc_jt$p.value[hc_jt$`model term` == "heat_group"]
-hc_p_heat_by_cultivar <- hc_jt$p.value[hc_jt$`model term` == "heat_group:cultivar"]
-hc_p_heat_by_year     <- hc_jt$p.value[hc_jt$`model term` == "heat_group:year"]
-hc_p_cult_by_year     <- hc_jt$p.value[hc_jt$`model term` == "cultivar:year"]
-```
+```{r, include=FALSE}
+# Models to evaluate
 
-The model is
+m_add_prop <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group + cultivar + year + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
+
+m_2way_prop <- glmmTMB(cbind(healthy_n, rotten_n) ~ (heat_group + cultivar + year)^2 + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
+
+m_3way_prop <- glmmTMB(cbind(healthy_n, rotten_n) ~ heat_group * cultivar * year + (1 | pair_id), family = betabinomial(link = "logit"), data = data)
 
 ```
-healthy_n ~ (heat_group + cultivar + year)^2 + (1 | pair_id)
+
+```{r, echo=FALSE}
+comparison_anova <- anova(m_add_prop, m_2way_prop, m_3way_prop)
+
+# section below was modified by use of AI chatbot - Gemini
+model_comp_prop <- data.frame(
+  Outcome = "Healthy berry proportion",
+  Model = c(
+    "Additive",
+    "Two-way interactions",
+    "Three-way interactions"
+  ),
+  df = c(
+    attr(logLik(m_add_prop), "df"),
+    attr(logLik(m_2way_prop), "df"),
+    attr(logLik(m_3way_prop), "df")
+  ),
+  AIC = c(AIC(m_add_prop), AIC(m_2way_prop), AIC(m_3way_prop)),
+  BIC = c(BIC(m_add_prop), BIC(m_2way_prop), BIC(m_3way_prop)),
+  LRT_p = c(
+    NA,
+    comparison_anova$`Pr(>Chisq)`[2],
+    comparison_anova$`Pr(>Chisq)`[3]
+  )
+)
+
+kable(
+  model_comp_prop,
+  digits = 3,
+  caption = "Model Comparison for Healthy Berry Proportion"
+)
+
+# Winning model: m_add_prop
+
+#We see that the lower AIC value is given by the additive model when the response variable is percentage of healthy berries by count. 
+
 ```
 
-Because the link is logarithmic, a coefficient is a log ratio of expected counts, and `exp(beta)` is the multiplicative change in the expected number of healthy berries against the reference group, which is Control in 2024 for Mullica Queen. A ratio of 0.85 therefore means 15% fewer healthy berries.
 
-### 5.2 Results
+```{r}
+coef_table_prop <- as.data.frame(summary(m_add_prop)$coefficients$cond)
 
-```{r hc-contrasts, include=FALSE}
-hc_emm <- emmeans(hc_final, ~ heat_group | cultivar * year)
+results_prop <- coef_table_prop %>%
+  rownames_to_column("Term") %>%
+  filter(Term != "(Intercept)") %>% # Filter out the intercept row
+  mutate(
+    Odds_Ratio = exp(Estimate),
+    CI_Lower = exp(Estimate - 1.96 * `Std. Error`),
+    CI_Upper = exp(Estimate + 1.96 * `Std. Error`),
+    # Calculate percentage change from odds ratio
+    Percent_Change = (Odds_Ratio - 1) * 100,
+    PC_Lower = (CI_Lower - 1) * 100,
+    PC_Upper = (CI_Upper - 1) * 100,
+    # Format Odds Ratio with CI
+    `Odds Ratio (95% CI)` = sprintf("%.3f [%.3f, %.3f]", Odds_Ratio, CI_Lower, CI_Upper),
+    # Format Percentage Change with CI
+    `Percent Change (95% CI)` = sprintf("%+.1f%% [%+.1f%%, %+.1f%%]", Percent_Change, PC_Lower, PC_Upper),
+    Significance = case_when(
+      `Pr(>|z|)` < 0.001 ~ "***",
+      `Pr(>|z|)` < 0.01  ~ "**",
+      `Pr(>|z|)` < 0.05  ~ "*",
+      TRUE ~ "Not Significant"
+    )
+  ) %>%
+  select(
+    Term,
+    `Odds Ratio (95% CI)`,
+    `Percent Change (95% CI)`,
+    Significance
+  )
 
-hc_ct <- contrast(hc_emm, method = "trt.vs.ctrl", ref = "Control",
-                  adjust = "dunnett")
-hc_ct_df <- as.data.frame(summary(hc_ct, type = "response", infer = TRUE))
-hc_ct_df$percent_change <- 100 * (hc_ct_df$ratio - 1)
+kable(
+  results_prop,
+  digits = 3,
+  caption = "Fixed Effects, Odds Ratios, and Percentage Changes for Healthy Berry Proportion"
+)
 
-hc_avg_df <- as.data.frame(summary(
-  contrast(emmeans(hc_final, ~ heat_group),
-           list("OTC avg vs Control" = c(-1, 1/4, 1/4, 1/4, 1/4))),
-  type = "response", infer = TRUE))
-
-fewer <- function(r) round(100 * (1 - r))
-hc_g  <- function(g, cu, yr) hc_ct_df$ratio[hc_ct_df$contrast == paste(g, "/ Control") &
-                                             hc_ct_df$cultivar == cu & hc_ct_df$year == yr]
-
-# Raw share of healthy berries by count, used in the conclusion
-hc_raw <- data %>%
-  group_by(heat_group) %>%
-  summarise(pct = mean(healthy_count_pct), .groups = "drop")
-hc_raw_control <- hc_raw$pct[hc_raw$heat_group == "Control"]
-hc_raw_heated  <- mean(hc_raw$pct[hc_raw$heat_group != "Control"])
 ```
 
-Averaged over the four heat groups, both years and both cultivars, heated plots produced `r fewer(hc_avg_df$ratio)`% fewer healthy berries than Control, with a 95% confidence interval from `r fewer(hc_avg_df$asymp.UCL)`% to `r fewer(hc_avg_df$asymp.LCL)`% fewer.
+The fixed-effects results from the beta-binomial mixed-effects model indicate that under baseline conditions (Mullica Queen cultivar, unheated control plots, 2024), berries had a high baseline probability of remaining healthy, with an intercept odds ratio of 20.16 (p<0.001). All acute heat stress treatments (Groups D through A) dramatically and significantly reduced the odds of fruit health (p<0.001), yielding odds ratios ranging from 
+0.238 to 0.284, which demonstrates that heat shock severely damages fruit quality regardless of pulse accumulation. When comparing cultivars, the Stevens (ST) variety did not exhibit a statistically significant difference in healthy berry proportion relative to the Mullica Queen (MQ) baseline (OR=1.19, p=0.181). \n 
 
-```{r hc-figure, fig.width=7.5, fig.height=4.2, fig.cap="Change in the expected number of healthy berries relative to Control, by heat group, cultivar and year. Negative values are reductions. Bars are 95% confidence intervals from the final negative-binomial model, adjusted for four comparisons with the same Control."}
-ggplot(hc_ct_df, aes(x = contrast, y = percent_change)) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
-  geom_point(size = 2.5) +
-  geom_errorbar(aes(ymin = (asymp.LCL - 1) * 100, ymax = (asymp.UCL - 1) * 100),
-                width = 0.15) +
-  facet_grid(year ~ cultivar, labeller = labeller(cultivar = cultivar_labels)) +
-  labs(x = "Heat group vs Control",
-       y = "Change in expected count (%)") +
-  theme_minimal(base_size = 12)
+However, a significant year effect was detected (OR=0.77, p=0.038), reflecting lower baseline fruit health in 2025 compared to 2024 even after controlling for heat treatments and cultivar differences. \n 
+
+```{r, include=FALSE}
+emm_prop <- emmeans(m_add_prop,~ heat_group | cultivar * year,type = "response")
+
+contrasts_prop <- contrast(
+  emm_prop,
+  method = "trt.vs.ctrl",
+  ref = 1,
+  adjust = "dunnett"
+)
+
+predictions_prop <- as.data.frame(emm_prop)
+comparisons_prop <- as.data.frame(
+  summary(contrasts_prop, type = "response", infer = TRUE)
+)
+
+kable(
+  predictions_prop,
+  digits = 3,
+  caption = "Predicted Healthy Berry Proportions"
+)
 ```
 
-```{r hc-table}
-hc_ct_df %>%
-  transmute(Cultivar = cultivar_labels[as.character(cultivar)],
-            Year = year,
-            Comparison = paste(group_labels[sub(" / Control", "", as.character(contrast))],
-                               "vs Control"),
-            Ratio = sprintf("%.2f (%.2f to %.2f)", ratio, asymp.LCL, asymp.UCL),
-            Change = sprintf("%+.0f%%", percent_change),
-            p = fmt_p(p.value)) %>%
-  arrange(Cultivar, Year, Comparison) %>%
-  kable(format = "latex", booktabs = TRUE, position = "H", col.names = c("Cultivar", "Year", "Comparison", "Ratio (95% CI)",
-                      "Change in expected count", "p-value"),
-        caption = "Effect of each heat group on the expected number of healthy berries, relative to Control, separately for each cultivar and year. Ratios are adjusted for four comparisons with the same Control using Dunnett's method. A ratio of 0.85 means 15\\% fewer healthy berries.",
-        longtable = FALSE)
+```{r, include=FALSE}
+
+kable(
+  comparisons_prop,
+  digits = 3,
+  caption = "Healthy Berry Proportion Comparisons Against Control"
+)
+
 ```
 
-The loss is concentrated in 2025 and in Mullica Queen. Four pulses cut the expected count of Mullica Queen in 2025 to `r sprintf("%.2f", hc_g("A", "MQ", "2025"))` of Control, a fall of `r fewer(hc_g("A", "MQ", "2025"))`%, and three pulses to `r sprintf("%.2f", hc_g("B", "MQ", "2025"))`. In 2024 the four heat groups are closer together, and only two pulses in Mullica Queen reach the 5% level after adjustment.
+```{r, echo=FALSE}
+plot_data <- predictions_prop
+response_col <- intersect(c("response", "rate", "prob", "emmean"), names(plot_data))[1]
+lower_col <- intersect(c("asymp.LCL", "lower.CL"), names(plot_data))[1]
+upper_col <- intersect(c("asymp.UCL", "upper.CL"), names(plot_data))[1]
 
-### 5.3 Answer
+plot_data$plot_y <- plot_data[[response_col]] * 100
+plot_data$plot_lower <- plot_data[[lower_col]] * 100
+plot_data$plot_upper <- plot_data[[upper_col]] * 100
 
-Heat stress reduces the number of healthy berries, but the size of the reduction varies with cultivar and year. On average, heated plots produced `r fewer(hc_avg_df$ratio)`% fewer healthy berries than Control, with a 95% confidence interval from `r fewer(hc_avg_df$asymp.UCL)`% to `r fewer(hc_avg_df$asymp.LCL)`% (p `r fmt_p(hc_avg_df$p.value)`). The 2025 season carries most of the loss, reaching `r fewer(hc_g("A", "MQ", "2025"))`% fewer healthy berries with four pulses in Mullica Queen and `r fewer(hc_g("A", "ST", "2025"))`% in Stevens, whereas in 2024 the four heat groups sit closer together.
+plot_prop <- ggplot(
+  plot_data,
+  aes(
+    x = heat_group,
+    y = plot_y,
+    color = heat_group,
+    group = 1
+  )
+) +
+  geom_point(size = 3) +
+  geom_line(
+    linewidth = 0.8,
+    color = "steelblue"
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = plot_lower,
+      ymax = plot_upper
+    ),
+    width = 0.2
+  ) +
+  facet_grid(
+    year ~ cultivar,
+    labeller = labeller(
+      cultivar = c(
+        "MQ" = "Mullica Queen",
+        "ST" = "Stevens"
+      )
+    )
+  ) +
+  scale_x_discrete(
+    limits = c("Control", "D", "C", "B", "A"),
+    labels = c(
+      "Control" = "No pulse",
+      "D" = "1 pulse",
+      "C" = "2 pulses",
+      "B" = "3 pulses",
+      "A" = "4 pulses"
+    )
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Model-Predicted Healthy Cranberry Percentage",
+    x = "Heat Treatment",
+    y = "Healthy Berries (%)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+    legend.position = "none"
+  )
 
-The joint tests show a clear heat effect, p `r fmt_p(hc_p_heat)`, and a large cultivar-by-year shift, p `r fmt_p(hc_p_cult_by_year)`. The heat effect also differs between years, p = `r fmt_p(hc_p_heat_by_year)`, which is the source of the 2025 losses. It differs less clearly between cultivars, p = `r fmt_p(hc_p_heat_by_cultivar)`. The full three-way interaction does not improve the fit, p = `r fmt_p(hc_p_three_way)`; the comparison of the candidate models is in Appendix C, together with a beta-binomial model that treats the same data directly as a proportion and gives the same ordering.
+print(plot_prop)
+
+```
+
+
+We see that percentage of Healthy berries tend to decrease fast as in between plots of no pulse and heat treated plots. We observe that heat treated plots with 4 pulses have the lowest percentage of healthy berries. 
+
+
 
 
 ## 6) How does heat stress affect yield as measured by the percentage of healthy fruit by weight?

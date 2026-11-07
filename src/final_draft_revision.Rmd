@@ -1764,36 +1764,33 @@ From the anova table from above, we can observe that the additive model yeilds t
 ### C.2 Estimated proportions and comparisons with Control
 
 Table 12 gives the estimated percentage of healthy berries for each heat group, cultivar and year, and Table 13 compares each heat group with Control.
-```{r}
-emm_prop <- emmeans(m_add_prop,~ heat_group | cultivar * year,type = "response")
+```{r a-hc-predictions}
+emm_prop <- emmeans(m_add_prop, ~ heat_group | cultivar * year, type = "response")
 
-contrasts_prop <- contrast(
-  emm_prop,
-  method = "trt.vs.ctrl",
-  ref = 1,
-  adjust = "dunnett"
-)
+contrasts_prop <- contrast(emm_prop, method = "trt.vs.ctrl", ref = 1, adjust = "dunnett")
 
 predictions_prop <- as.data.frame(emm_prop)
-comparisons_prop <- as.data.frame(
-  summary(contrasts_prop, type = "response", infer = TRUE)
-)
+comparisons_prop <- as.data.frame(summary(contrasts_prop, type = "response", infer = TRUE))
 
-kable(
-  predictions_prop,
-  digits = 3,
-  caption = "Predicted Healthy Berry Proportions"
-)
-```
+predictions_prop %>%
+  transmute(Cultivar     = cultivar_labels[as.character(cultivar)],
+            Year         = year,
+            `Heat group` = group_labels[as.character(heat_group)],
+            `Healthy berries, % (95% CI)` = sprintf("%.1f (%.1f to %.1f)",
+                                                    100 * prob, 100 * asymp.LCL, 100 * asymp.UCL)) %>%
+  kable(row.names = FALSE,
+        caption = "Estimated percentage of healthy berries by count for each heat group, cultivar and year, from the final beta-binomial model.")
 
-```{r}
-
-kable(
-  comparisons_prop,
-  digits = 3,
-  caption = "Healthy Berry Proportion Comparisons Against Control"
-)
-
+comparisons_prop %>%
+  transmute(Cultivar   = cultivar_labels[as.character(cultivar)],
+            Year       = year,
+            Comparison = paste(group_labels[sub(" / Control", "", as.character(contrast))],
+                               "vs Control"),
+            `Odds ratio (95% CI)` = sprintf("%.2f (%.2f to %.2f)",
+                                            odds.ratio, asymp.LCL, asymp.UCL),
+            `p-value`  = fmt_p(p.value)) %>%
+  kable(row.names = FALSE,
+        caption = "Odds of a berry being healthy in each heat group relative to Control, from the final beta-binomial model. Intervals and p-values are adjusted for comparing four heat groups with the same Control (Dunnett's method).")
 ```
 
 
@@ -1878,7 +1875,7 @@ The beta-binomial model on the counts of healthy and rotten berries is an altern
 Year contributes little to the share by weight. Dropping it changes the fit by p = `r fmt_p(hp_p_year)`, so the year term is kept only so that this model has the same fixed-effect structure as the other yield models and the measures stay comparable.
 
 
-```{r, include=FALSE}
+```{r,include=FALSE}
 weight_predictions <- emmeans(m1, ~ heat_group, type = "response")
 print(weight_predictions)
 plot(weight_predictions)
@@ -1940,5 +1937,4 @@ pairs(healthy_predictions)
 #  theme_minimal()
 
 ```
-
 

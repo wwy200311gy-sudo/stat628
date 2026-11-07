@@ -1790,7 +1790,7 @@ comparisons_prop %>%
                                             odds.ratio, asymp.LCL, asymp.UCL),
             `p-value`  = fmt_p(p.value)) %>%
   kable(row.names = FALSE,
-        caption = "Odds of a berry being healthy in each heat group relative to Control, from the final beta-binomial model. Intervals and p-values are adjusted for comparing four heat groups with the same Control (Dunnett's method).")
+        caption = "Odds of a berry being healthy in each heat group relative to Control, from the final beta-binomial model. Intervals and p-values are adjusted for comparing four heat groups with the same Control.")
 ```
 
 
